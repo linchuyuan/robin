@@ -38,7 +38,13 @@ def get_session() -> dict[str, str]:
     """Return a cached session or log in to Robinhood."""
     if SESSION_CACHE.exists():
         try:
-            return json.loads(SESSION_CACHE.read_text())
+            data = json.loads(SESSION_CACHE.read_text())
+            token = data.get("access_token")
+            token_type = data.get("token_type", "Bearer")
+            if token:
+                rh.update_session("Authorization", f"{token_type} {token}")
+                rh.globals.LOGGED_IN = True
+            return data
         except json.JSONDecodeError:
             SESSION_CACHE.unlink()
     username, password, mfa = get_credentials()

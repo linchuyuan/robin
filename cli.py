@@ -45,6 +45,7 @@ def logout_cmd() -> None:
 @click.option("--yes", is_flag=True, help="Skip confirmation for risky orders.")
 @click.pass_context
 def order(ctx: click.Context, symbol: str, qty: float, side: str, order_type: str, price: float | None, yes: bool) -> None:
+    get_session()
     if order_type == "limit" and price is None:
         raise click.UsageError("Limit orders require --price.")
     if side == "sell" and not yes:
@@ -63,12 +64,14 @@ def order(ctx: click.Context, symbol: str, qty: float, side: str, order_type: st
 @cli.command()
 @click.argument("symbol")
 def quote(symbol: str) -> None:
+    get_session()
     data = get_quote(symbol.upper())
     click.echo(f"{symbol.upper()}: {data}")
 
 
 @cli.command()
 def portfolio_cmd() -> None:
+    get_session()
     positions = list_positions()
     if not positions:
         click.echo("No open positions.")
@@ -80,6 +83,7 @@ def portfolio_cmd() -> None:
 @cli.command()
 @click.argument("order_id")
 def cancel(order_id: str) -> None:
+    get_session()
     rh.cancel_stock_order(order_id)
     click.echo(f"Cancellation requested for {order_id}.")
 

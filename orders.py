@@ -37,7 +37,8 @@ def place_order(symbol: str, qty: float, side: str, order_type: str, price: floa
     validate_order(symbol, qty, side, order_type, price)
     order_payload = build_payload(symbol, qty, side, order_type, price)
     if session:
-        rh.set_session(session)
+        # rh.set_session(session) is not available; session restoration is handled globally
+        pass
     if order_type == "market":
         return rh.order_buy_fractional_by_quantity(symbol, qty) if side == "buy" else rh.order_sell_fractional_by_quantity(symbol, qty)
     return rh.order_buy_symbol(symbol, qty, "limit", price) if side == "buy" else rh.order_sell_symbol(symbol, qty, "limit", price)

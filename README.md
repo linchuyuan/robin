@@ -25,7 +25,7 @@ A lightweight Python CLI for placing orders on Robinhood with a safety-first wor
    export ROBINHOOD_PASSWORD="supersecret"
    export ROBINHOOD_MFA="123456"
    ```
-2. The CLI reads these values via `python-dotenv` (if a `.env` is present) and falls back to environment variables.
+2. The CLI reads these values via `python-dotenv` (if a `.env` is present) and falls back to environment variables. If either the username or password is missing, the CLI will prompt you interactively.
 3. A cached session token (with TTL) is stored at `~/.robinhood-cli/session.json`. Delete it or run `python cli.py logout` to purge credentials.
 
 ## CLI Commands

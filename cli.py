@@ -9,7 +9,9 @@ import robin_stocks.robinhood as rh
 from auth import get_session, logout
 from orders import OrderValidationError, place_order
 from portfolio import get_quote, list_positions
+from account import get_account_profile
 from market_data import get_history, get_news
+from yahoo_finance import get_yf_quote, get_yf_news, get_yf_options
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -129,6 +131,88 @@ def news(symbol: str) -> None:
         click.echo(f"{article['published_at']} - {article['title']}\n{article['url']}\n")
 
 
+
+@cli.command()
+@click.argument("symbol")
+def yf_quote(symbol: str) -> None:
+    """Fetch real-time stock quote from Yahoo Finance."""
+    try:
+        quote = get_yf_quote(symbol)
+        click.echo(f"Symbol: {quote['symbol']}")
+        click.echo(f"Price: {quote['current_price']}")
+        click.echo(f"Open: {quote['open']}")
+        click.echo(f"High: {quote['high']}")
+        click.echo(f"Low: {quote['low']}")
+        click.echo(f"Volume: {quote['volume']}")
+        click.echo(f"Market Cap: {quote['market_cap']}")
+        click.echo(f"P/E Ratio: {quote['pe_ratio']}")
+        click.echo(f"Dividend Yield: {quote['dividend_yield']}")
+    except Exception as e:
+        click.echo(f"Error fetching Yahoo Finance quote: {str(e)}")
+
+@cli.command()
+@click.argument("symbol")
+def yf_news(symbol: str) -> None:
+    """Fetch latest news from Yahoo Finance."""
+    try:
+        news = get_yf_news(symbol)
+        if not news:
+            click.echo(f"No Yahoo Finance news found for {symbol}.")
+            return
+        
+        for art in news[:5]:
+            title = art.get('title', 'No Title')
+            link = art.get('link', '#')
+            publisher = art.get('publisher', 'Unknown')
+            click.echo(f"- {title} ({publisher})\n  Link: {link}\n")
+    except Exception as e:
+        click.echo(f"Error fetching Yahoo Finance news: {str(e)}")
+
+@cli.command()
+@click.argument("symbol")
+@click.option("--expiration", help="Expiration date (YYYY-MM-DD)")
+def yf_options(symbol: str, expiration: str | None) -> None:
+    """Fetch option chain data from Yahoo Finance."""
+    try:
+        data = get_yf_options(symbol, expiration)
+        
+        if "expirations" in data and "calls" not in data:
+            click.echo(f"Available expiration dates for {symbol}:")
+            for date in data["expirations"]:
+                click.echo(date)
+            return
+        
+        click.echo(f"Option Chain for {symbol} (Exp: {data['expiration_date']})")
+        current_price = data.get("current_price", 0.0)
+        click.echo(f"Current Price: {current_price}\n")
+        
+        click.echo("CALLS (Top 5 near money):")
+        calls = data.get("calls", [])
+        # Sort by distance to current price
+        calls.sort(key=lambda x: abs(float(x.get('strike', 0)) - current_price))
+        for c in calls[:5]:
+            click.echo(f"Strike: {c.get('strike')} | Bid: {c.get('bid')} | Ask: {c.get('ask')} | Vol: {c.get('volume')}")
+            
+        click.echo("\nPUTS (Top 5 near money):")
+        puts = data.get("puts", [])
+        # Sort by distance to current price
+        puts.sort(key=lambda x: abs(float(x.get('strike', 0)) - current_price))
+        for p in puts[:5]:
+            click.echo(f"Strike: {p.get('strike')} | Bid: {p.get('bid')} | Ask: {p.get('ask')} | Vol: {p.get('volume')}")
+            
+    except Exception as e:
+        click.echo(f"Error fetching options: {str(e)}")
+
+@cli.command()
+def account() -> None:
+    """Get account buying power and cash info."""
+    get_session()
+    profile = get_account_profile()
+    
+    click.echo(f"Buying Power: {profile.get('buying_power')}")
+    click.echo(f"Cash Available for Withdrawal: {profile.get('cash_available_for_withdrawal')}")
+    click.echo(f"Cash Held for Orders: {profile.get('cash_held_for_orders')}")
+    click.echo(f"Unsettled Funds: {profile.get('unsettled_funds')}")
 
 if __name__ == "__main__":
     cli()

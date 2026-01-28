@@ -40,8 +40,40 @@ A lightweight Python CLI for placing orders on Robinhood with a safety-first wor
 | `python cli.py cancel ORDER_ID` | Cancel a pending order. |
 | `python cli.py history SYMBOL` | Fetch historical price data. Use `--span` (default: week) and `--interval` (default: day) to customize. |
 | `python cli.py news SYMBOL` | Fetch recent news articles for a stock. |
+| `python cli.py orders` | List all pending/open orders. |
+| `python cli.py account` | Show account buying power, cash balance, and unsettled funds. |
+| `python cli.py yf-quote SYMBOL` | Fetch real-time quote via Yahoo Finance. |
+| `python cli.py yf-news SYMBOL` | Fetch latest news via Yahoo Finance. |
+| `python cli.py yf-options SYMBOL` | View option chains via Yahoo Finance. Use `--expiration` for specific dates. |
 
 Each command shares common options via a decorator (e.g., `--debug`, `--dry-run`) so the user can preview requests without submitting them.
+
+## MCP Server (AI Agent Skills)
+
+This project includes a Model Context Protocol (MCP) server, allowing AI agents (like Claude Desktop) to interact with your Robinhood account.
+
+### Capabilities
+- **Portfolio Management:** Get current positions and account buying power.
+- **Trading:** Place market/limit orders and cancel pending orders.
+- **Market Data:** Fetch quotes, news, history, and option chains (via Yahoo Finance).
+
+### Usage
+1. Start the MCP server:
+   ```powershell
+   .\start_mcp.bat
+   ```
+2. Configure your MCP client (e.g., Claude Desktop) to point to the server.
+
+### Tools Available
+- `get_portfolio`: List open positions.
+- `get_account_info`: View buying power and cash.
+- `get_pending_orders`: List open orders.
+- `execute_order`: Place buy/sell orders.
+- `cancel_order`: Cancel a specific order.
+- `get_stock_news` / `get_yf_stock_news`: Get latest news.
+- `get_stock_history`: Get historical price data.
+- `get_yf_stock_quote`: Get real-time quote (Yahoo).
+- `get_yf_option_chain`: Get option chain (Yahoo).
 
 ## Execution
 

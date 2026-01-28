@@ -3,3 +3,4 @@ click>=8.0
 python-dotenv>=1.0
 robin_stocks>=0.1.0
 fastmcp>=0.1.0
+yfinance>=0.2.0

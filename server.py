@@ -6,6 +6,8 @@ from auth import get_session
 from portfolio import list_positions
 from market_data import get_history, get_news
 from orders import place_order
+from yahoo_finance import get_yf_quote, get_yf_news, get_yf_options
+from account import get_account_profile
 
 import robin_stocks.robinhood as rh
 
@@ -109,6 +111,93 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
         return f"Order submitted: {result.get('id')}\nDetails: {result}"
     except Exception as e:
         return f"Error placing order: {str(e)}"
+
+@mcp.tool()
+def get_yf_stock_quote(symbol: str) -> str:
+    """Fetch real-time stock quote from Yahoo Finance."""
+    try:
+        quote = get_yf_quote(symbol)
+        return (
+            f"Symbol: {quote['symbol']}\n"
+            f"Price: {quote['current_price']}\n"
+            f"Open: {quote['open']}\n"
+            f"High: {quote['high']}\n"
+            f"Low: {quote['low']}\n"
+            f"Volume: {quote['volume']}\n"
+            f"Market Cap: {quote['market_cap']}\n"
+            f"P/E Ratio: {quote['pe_ratio']}\n"
+            f"Dividend Yield: {quote['dividend_yield']}"
+        )
+    except Exception as e:
+        return f"Error fetching Yahoo Finance quote: {str(e)}"
+
+@mcp.tool()
+def get_yf_stock_news(symbol: str) -> str:
+    """Fetch latest news from Yahoo Finance for a symbol."""
+    try:
+        news = get_yf_news(symbol)
+        if not news:
+            return f"No Yahoo Finance news found for {symbol}."
+        
+        summary = []
+        for art in news[:5]:
+            title = art.get('title', 'No Title')
+            link = art.get('link', '#')
+            publisher = art.get('publisher', 'Unknown')
+            summary.append(f"- {title} ({publisher})\n  Link: {link}")
+        return "\n".join(summary)
+    except Exception as e:
+        return f"Error fetching Yahoo Finance news: {str(e)}"
+
+@mcp.tool()
+def get_yf_option_chain(symbol: str, expiration_date: str = None) -> str:
+    """
+    Fetch option chain data from Yahoo Finance.
+    
+    Args:
+        symbol: Stock ticker symbol
+        expiration_date: Optional expiration date (YYYY-MM-DD). If omitted, lists available dates.
+    """
+    try:
+        data = get_yf_options(symbol, expiration_date)
+        
+        if "expirations" in data and not "calls" in data:
+            return f"Available expiration dates for {symbol}:\n" + "\n".join(data["expirations"])
+        
+        output = [f"Option Chain for {symbol} (Exp: {data['expiration_date']})"]
+        current_price = data.get("current_price", 0.0)
+        output.append(f"Current Price: {current_price}\n")
+        
+        output.append("CALLS (Top 5 near money):")
+        calls = data.get("calls", [])
+        calls.sort(key=lambda x: abs(float(x.get('strike', 0)) - current_price))
+        for c in calls[:5]: # Simplified view
+            output.append(f"Strike: {c.get('strike')} | Bid: {c.get('bid')} | Ask: {c.get('ask')} | Vol: {c.get('volume')}")
+            
+        output.append("\nPUTS (Top 5 near money):")
+        puts = data.get("puts", [])
+        puts.sort(key=lambda x: abs(float(x.get('strike', 0)) - current_price))
+        for p in puts[:5]: # Simplified view
+            output.append(f"Strike: {p.get('strike')} | Bid: {p.get('bid')} | Ask: {p.get('ask')} | Vol: {p.get('volume')}")
+            
+        return "\n".join(output)
+    except Exception as e:
+        return f"Error fetching options: {str(e)}"
+
+@mcp.tool()
+def get_account_info() -> str:
+    """Get account buying power and cash info."""
+    try:
+        get_session()
+        profile = get_account_profile()
+        return (
+            f"Buying Power: {profile.get('buying_power')}\n"
+            f"Cash Available for Withdrawal: {profile.get('cash_available_for_withdrawal')}\n"
+            f"Cash Held for Orders: {profile.get('cash_held_for_orders')}\n"
+            f"Unsettled Funds: {profile.get('unsettled_funds')}"
+        )
+    except Exception as e:
+        return f"Error fetching account info: {str(e)}"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the Robinhood MCP server")

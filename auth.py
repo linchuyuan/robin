@@ -32,6 +32,9 @@ def get_credentials() -> tuple[str, str, Optional[str]]:
     password = os.getenv("ROBINHOOD_PASSWORD")
     mfa = os.getenv("ROBINHOOD_MFA")
     if not username or not password:
+        # Check if we are running in a non-interactive mode (like MCP server)
+        if os.getenv("MCP_SERVER_MODE"):
+            raise Exception("Authentication required. Please run 'robin login' from the terminal first.")
         username, password = prompt_credentials()
     return username, password, mfa
 

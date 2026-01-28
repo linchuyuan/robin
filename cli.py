@@ -83,6 +83,17 @@ def portfolio_cmd() -> None:
 
 
 @cli.command()
+def orders() -> None:
+    """List pending orders."""
+    get_session()
+    open_orders = rh.get_all_open_stock_orders()
+    if not open_orders:
+        click.echo("No pending orders.")
+        return
+    for order in open_orders:
+        click.echo(f"ID: {order['id']} | {order['side']} {order['quantity']} {order['symbol']} @ {order.get('price', 'market')}")
+
+@cli.command()
 @click.argument("order_id")
 def cancel(order_id: str) -> None:
     get_session()

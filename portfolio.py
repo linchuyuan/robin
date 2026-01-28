@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Portfolio helpers for Robinhood CLI."""
 
 from __future__ import annotations

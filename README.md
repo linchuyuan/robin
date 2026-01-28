@@ -38,8 +38,23 @@ A lightweight Python CLI for placing orders on Robinhood with a safety-first wor
 | `python cli.py quote SYMBOL` | Fetch the latest price and 52-week range before trading. |
 | `python cli.py portfolio` | List current positions with quantity, average price, and market value. |
 | `python cli.py cancel ORDER_ID` | Cancel a pending order. |
+| `python cli.py history SYMBOL` | Fetch historical price data. Use `--span` (default: week) and `--interval` (default: day) to customize. |
+| `python cli.py news SYMBOL` | Fetch recent news articles for a stock. |
 
 Each command shares common options via a decorator (e.g., `--debug`, `--dry-run`) so the user can preview requests without submitting them.
+
+## Execution
+
+On Linux/macOS, you can run the CLI directly:
+```bash
+./cli.py login
+```
+
+On Windows, use the provided batch wrapper:
+```powershell
+.\robin portfolio
+.\robin history AAPL
+```
 
 ## Authentication & Order Flow
 

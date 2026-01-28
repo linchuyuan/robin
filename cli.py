@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Command-line entrypoints for Robinhood CLI."""
 
 from __future__ import annotations
@@ -8,6 +9,7 @@ import robin_stocks.robinhood as rh
 from auth import get_session, logout
 from orders import OrderValidationError, place_order
 from portfolio import get_quote, list_positions
+from market_data import get_history, get_news
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -86,6 +88,35 @@ def cancel(order_id: str) -> None:
     get_session()
     rh.cancel_stock_order(order_id)
     click.echo(f"Cancellation requested for {order_id}.")
+
+
+@cli.command()
+@click.argument("symbol")
+@click.option("--interval", type=click.Choice(["5minute", "10minute", "hour", "day", "week"]), default="day")
+@click.option("--span", type=click.Choice(["day", "week", "month", "3month", "year", "5year"]), default="week")
+def history(symbol: str, interval: str, span: str) -> None:
+    """Fetch historical data for a stock."""
+    get_session()
+    data = get_history(symbol.upper(), interval, span)
+    if not data:
+        click.echo("No historical data found.")
+        return
+    for point in data:
+        click.echo(f"{point['begins_at']}: Open {point['open_price']}, Close {point['close_price']}")
+
+
+@cli.command()
+@click.argument("symbol")
+def news(symbol: str) -> None:
+    """Fetch news for a stock."""
+    get_session()
+    articles = get_news(symbol.upper())
+    if not articles:
+        click.echo("No news found.")
+        return
+    for article in articles:
+        click.echo(f"{article['published_at']} - {article['title']}\n{article['url']}\n")
+
 
 
 if __name__ == "__main__":

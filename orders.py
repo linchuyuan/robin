@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Order-building helpers."""
 
 from __future__ import annotations

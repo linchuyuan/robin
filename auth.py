@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Authentication helpers for Robinhood CLI."""
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from typing import Optional
 
 import click
 import robin_stocks.robinhood as rh
+from robin_stocks.robinhood import helper
 from dotenv import load_dotenv
 
 SESSION_CACHE = Path.home() / ".robinhood-cli" / "session.json"
@@ -44,6 +46,7 @@ def get_session() -> dict[str, str]:
             if token:
                 rh.update_session("Authorization", f"{token_type} {token}")
                 rh.globals.LOGGED_IN = True
+                helper.LOGGED_IN = True
             return data
         except json.JSONDecodeError:
             SESSION_CACHE.unlink()

@@ -8,6 +8,8 @@ from market_data import get_history, get_news
 from orders import place_order
 from yahoo_finance import get_yf_quote, get_yf_news, get_yf_options
 from account import get_account_profile
+from crypto import get_crypto_quote, get_crypto_positions, place_crypto_order
+from order_history import get_order_history, get_order_detail
 
 import robin_stocks.robinhood as rh
 
@@ -25,7 +27,8 @@ def get_pending_orders() -> str:
         
         result = []
         for order in orders:
-            result.append(f"ID: {order['id']} | {order['side']} {order['quantity']} {order['symbol']} @ {order.get('price', 'market')}")
+            symbol = order.get('symbol') or order.get('instrument_id') or 'N/A'
+            result.append(f"ID: {order['id']} | {order.get('side')} {order.get('quantity')} {symbol} @ {order.get('price', 'market')}")
         return "\n".join(result)
     except Exception as e:
         return f"Error fetching orders: {str(e)}"
@@ -168,16 +171,42 @@ def get_yf_option_chain(symbol: str, expiration_date: str = None) -> str:
         current_price = data.get("current_price", 0.0)
         output.append(f"Current Price: {current_price}\n")
         
-        output.append("CALLS (Top 5 near money):")
+        output.append("CALLS:")
         calls = data.get("calls", [])
-        calls.sort(key=lambda x: abs(float(x.get('strike', 0)) - current_price))
-        for c in calls[:5]: # Simplified view
+        
+        calls_below = sorted(
+            [c for c in calls if float(c.get('strike', 0)) < current_price],
+            key=lambda x: float(x.get('strike', 0)),
+            reverse=True
+        )[:5]
+        
+        calls_above = sorted(
+            [c for c in calls if float(c.get('strike', 0)) >= current_price],
+            key=lambda x: float(x.get('strike', 0))
+        )[:5]
+        
+        selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get('strike', 0)))
+        
+        for c in selected_calls:
             output.append(f"Strike: {c.get('strike')} | Bid: {c.get('bid')} | Ask: {c.get('ask')} | Vol: {c.get('volume')}")
             
-        output.append("\nPUTS (Top 5 near money):")
+        output.append("\nPUTS:")
         puts = data.get("puts", [])
-        puts.sort(key=lambda x: abs(float(x.get('strike', 0)) - current_price))
-        for p in puts[:5]: # Simplified view
+        
+        puts_below = sorted(
+            [p for p in puts if float(p.get('strike', 0)) < current_price],
+            key=lambda x: float(x.get('strike', 0)),
+            reverse=True
+        )[:5]
+        
+        puts_above = sorted(
+            [p for p in puts if float(p.get('strike', 0)) >= current_price],
+            key=lambda x: float(x.get('strike', 0))
+        )[:5]
+        
+        selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get('strike', 0)))
+        
+        for p in selected_puts:
             output.append(f"Strike: {p.get('strike')} | Bid: {p.get('bid')} | Ask: {p.get('ask')} | Vol: {p.get('volume')}")
             
         return "\n".join(output)
@@ -198,6 +227,112 @@ def get_account_info() -> str:
         )
     except Exception as e:
         return f"Error fetching account info: {str(e)}"
+
+@mcp.tool()
+def get_crypto_price(symbol: str) -> str:
+    """Fetch crypto quote.
+    
+    Args:
+        symbol: Crypto ticker (e.g. BTC)
+    """
+    try:
+        get_session()
+        quote = get_crypto_quote(symbol)
+        return (
+            f"Symbol: {quote['symbol']}\n"
+            f"Mark Price: {quote['mark_price']}\n"
+            f"Bid: {quote['bid_price']}\n"
+            f"Ask: {quote['ask_price']}\n"
+            f"High: {quote['high_price']}\n"
+            f"Low: {quote['low_price']}"
+        )
+    except Exception as e:
+        return f"Error fetching crypto quote: {str(e)}"
+
+@mcp.tool()
+def get_crypto_holdings() -> str:
+    """Get current crypto positions."""
+    try:
+        get_session()
+        positions = get_crypto_positions()
+        if not positions:
+            return "No crypto positions found."
+        
+        result = []
+        for pos in positions:
+            result.append(f"{pos['symbol']}: {pos['quantity']} (Cost Basis: {pos['cost_basis']})")
+        return "\n".join(result)
+    except Exception as e:
+        return f"Error fetching crypto holdings: {str(e)}"
+
+@mcp.tool()
+def execute_crypto_order(symbol: str, qty: float, side: str, order_type: str = "market", price: float = None) -> str:
+    """Place a crypto order.
+    
+    Args:
+        symbol: Crypto ticker (e.g. BTC)
+        qty: Quantity to buy/sell
+        side: 'buy' or 'sell'
+        order_type: 'market' or 'limit' (default: market)
+        price: Limit price (required if order_type is limit)
+    """
+    try:
+        get_session()
+        result = place_crypto_order(symbol, qty, side, order_type, price)
+        return f"Crypto Order submitted: {result.get('id')}\nDetails: {result}"
+    except Exception as e:
+        return f"Error placing crypto order: {str(e)}"
+
+@mcp.tool()
+def get_stock_order_history() -> str:
+    """Fetch history of all stock orders."""
+    try:
+        get_session()
+        orders = get_order_history()
+        if not orders:
+            return "No order history found."
+        
+        result = []
+        for order in orders[:10]: # Limit to last 10 for brevity
+            symbol = order.get('symbol') or order.get('instrument_id') or 'N/A'
+            state = order.get('state', 'unknown')
+            date = order.get('created_at', 'N/A')
+            result.append(f"ID: {order.get('id')} | {date} | {symbol} | {order.get('side')} {order.get('quantity')} | {state} | Price: {order.get('average_price')}")
+        return "\n".join(result)
+    except Exception as e:
+        return f"Error fetching order history: {str(e)}"
+
+@mcp.tool()
+def get_order_details(order_id: str) -> str:
+    """Fetch details of a specific order by UUID.
+    
+    Args:
+        order_id: The UUID of the order
+    """
+    try:
+        get_session()
+        order = get_order_detail(order_id)
+        if not order:
+            return f"Order {order_id} not found."
+            
+        symbol = rh.get_symbol_by_url(order.get('instrument')) or 'N/A'
+        
+        details = [
+            f"Order ID: {order.get('id')}",
+            f"Symbol: {symbol}",
+            f"State: {order.get('state')}",
+            f"Side: {order.get('side')}",
+            f"Quantity: {order.get('quantity')}",
+            f"Price: {order.get('price') or order.get('average_price') or 'Market'}",
+            f"Type: {order.get('type')}",
+            f"Created At: {order.get('created_at')}",
+            f"Updated At: {order.get('updated_at')}",
+            f"Fees: {order.get('fees')}",
+            f"Executions: {len(order.get('executions', []))}"
+        ]
+        return "\n".join(details)
+    except Exception as e:
+        return f"Error fetching order details: {str(e)}"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the Robinhood MCP server")

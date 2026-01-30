@@ -41,7 +41,12 @@ A lightweight Python CLI for placing orders on Robinhood with a safety-first wor
 | `python cli.py history SYMBOL` | Fetch historical price data. Use `--span` (default: week) and `--interval` (default: day) to customize. |
 | `python cli.py news SYMBOL` | Fetch recent news articles for a stock. |
 | `python cli.py orders` | List all pending/open orders. |
+| `python cli.py history-orders` | List the last 10 stock orders (open or closed) with their Order IDs. |
+| `python cli.py order-detail ORDER_ID` | Show detailed information for a specific order. You can get the `ORDER_ID` from the `history-orders` command output. |
 | `python cli.py account` | Show account buying power, cash balance, and unsettled funds. |
+| `python cli.py crypto-quote SYMBOL` | Fetch crypto quote (e.g. BTC). |
+| `python cli.py crypto-holdings` | List current crypto positions. |
+| `python cli.py crypto-order SYMBOL --qty 0.1 --side buy` | Place a crypto order. |
 | `python cli.py yf-quote SYMBOL` | Fetch real-time quote via Yahoo Finance. |
 | `python cli.py yf-news SYMBOL` | Fetch latest news via Yahoo Finance. |
 | `python cli.py yf-options SYMBOL` | View option chains via Yahoo Finance. Use `--expiration` for specific dates. |
@@ -68,12 +73,17 @@ This project includes a Model Context Protocol (MCP) server, allowing AI agents 
 - `get_portfolio`: List open positions.
 - `get_account_info`: View buying power and cash.
 - `get_pending_orders`: List open orders.
+- `get_stock_order_history`: List recent stock orders.
+- `get_order_details`: Get full details of an order by ID.
 - `execute_order`: Place buy/sell orders.
 - `cancel_order`: Cancel a specific order.
 - `get_stock_news` / `get_yf_stock_news`: Get latest news.
 - `get_stock_history`: Get historical price data.
 - `get_yf_stock_quote`: Get real-time quote (Yahoo).
 - `get_yf_option_chain`: Get option chain (Yahoo).
+- `get_crypto_price`: Get crypto quote.
+- `get_crypto_holdings`: Get crypto positions.
+- `execute_crypto_order`: Place crypto orders.
 
 ## Execution
 

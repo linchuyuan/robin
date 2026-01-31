@@ -63,11 +63,39 @@ This project includes a Model Context Protocol (MCP) server, allowing AI agents 
 - **Market Data:** Fetch quotes, news, history, and option chains (via Yahoo Finance).
 
 ### Usage
-1. Start the MCP server:
+1. Configure your MCP client (e.g., Claude Desktop, MCPorter) to point to the server.
+
+   **Standard MCP Config (stdio transport):**
+   Add this to your client's config file (e.g., `%APPDATA%\Claude\claude_desktop_config.json`):
+   ```json
+   {
+     "mcpServers": {
+       "robinhood": {
+         "command": "c:\\absolute\\path\\to\\robin\\start_mcp.bat",
+         "args": ["--transport", "stdio"]
+       }
+     }
+   }
+   ```
+   *Note: I have created a sample `mcp_config.json` in the root of this project that you can copy from. Update the path to match your actual location.*
+
+   **SSE Transport:**
+   If running the server manually (`.\start_mcp.bat`), it defaults to SSE at `http://127.0.0.1:8000/sse`.
+   ```json
+   {
+     "mcpServers": {
+       "robinhood": {
+         "url": "http://127.0.0.1:8000/sse"
+       }
+     }
+   }
+   ```
+
+2. Start the MCP server:
    ```powershell
    .\start_mcp.bat
    ```
-2. Configure your MCP client (e.g., Claude Desktop) to point to the server.
+   (Only needed if using SSE transport or manual testing)
 
 ### Tools Available
 - `get_portfolio`: List open positions.
@@ -80,7 +108,7 @@ This project includes a Model Context Protocol (MCP) server, allowing AI agents 
 - `get_stock_news` / `get_yf_stock_news`: Get latest news.
 - `get_stock_history`: Get historical price data.
 - `get_yf_stock_quote`: Get real-time quote (Yahoo).
-- `get_yf_option_chain`: Get option chain (Yahoo).
+- `get_option_chain`: Get option chain with Greeks (Robinhood).
 - `get_crypto_price`: Get crypto quote.
 - `get_crypto_holdings`: Get crypto positions.
 - `execute_crypto_order`: Place crypto orders.

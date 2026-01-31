@@ -13,6 +13,7 @@ from account import get_account_profile
 from market_data import get_history, get_news
 from yahoo_finance import get_yf_quote, get_yf_news, get_yf_options
 from order_history import get_order_history, get_order_detail
+from robin_options import get_option_chain
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -231,6 +232,71 @@ def yf_options(symbol: str, expiration: str | None) -> None:
         
         for p in selected_puts:
             click.echo(f"Strike: {p.get('strike')} | Bid: {p.get('bid')} | Ask: {p.get('ask')} | Vol: {p.get('volume')}")
+            
+    except Exception as e:
+        click.echo(f"Error fetching options: {str(e)}")
+
+@cli.command()
+@click.argument("symbol")
+@click.option("--expiration", help="Expiration date (YYYY-MM-DD)")
+def options(symbol: str, expiration: str | None) -> None:
+    """Fetch option chain data from Robinhood (with Greeks)."""
+    get_session()
+    try:
+        data = get_option_chain(symbol, expiration)
+        
+        if "expirations" in data and "calls" not in data:
+            click.echo(f"Available expiration dates for {symbol}:")
+            for date in data["expirations"]:
+                click.echo(date)
+            return
+        
+        click.echo(f"Option Chain for {symbol} (Exp: {data['expiration_date']})")
+        current_price = data.get("current_price", 0.0)
+        click.echo(f"Current Price: {current_price}\n")
+        
+        def print_option(opt):
+            click.echo(f"Strike: {opt['strike']} | Price: {opt['price']} | "
+                       f"Delta: {opt['delta']:.3f} | Gamma: {opt['gamma']:.3f} | "
+                       f"Theta: {opt['theta']:.3f} | Vega: {opt['vega']:.3f}")
+
+        click.echo("CALLS:")
+        calls = data.get("calls", [])
+        
+        calls_below = sorted(
+            [c for c in calls if float(c.get('strike', 0)) < current_price],
+            key=lambda x: float(x.get('strike', 0)),
+            reverse=True
+        )[:5]
+        
+        calls_above = sorted(
+            [c for c in calls if float(c.get('strike', 0)) >= current_price],
+            key=lambda x: float(x.get('strike', 0))
+        )[:5]
+        
+        selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get('strike', 0)))
+        
+        for c in selected_calls:
+            print_option(c)
+            
+        click.echo("\nPUTS:")
+        puts = data.get("puts", [])
+        
+        puts_below = sorted(
+            [p for p in puts if float(p.get('strike', 0)) < current_price],
+            key=lambda x: float(x.get('strike', 0)),
+            reverse=True
+        )[:5]
+        
+        puts_above = sorted(
+            [p for p in puts if float(p.get('strike', 0)) >= current_price],
+            key=lambda x: float(x.get('strike', 0))
+        )[:5]
+        
+        selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get('strike', 0)))
+        
+        for p in selected_puts:
+            print_option(p)
             
     except Exception as e:
         click.echo(f"Error fetching options: {str(e)}")

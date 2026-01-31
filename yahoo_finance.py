@@ -35,9 +35,12 @@ def get_yf_news(symbol: str) -> List[Dict[str, Any]]:
     :param symbol: Stock ticker symbol
     :return: List of news dictionaries
     """
-    ticker = yf.Ticker(symbol)
-    news = ticker.news
-    return news if news else []
+    try:
+        ticker = yf.Ticker(symbol)
+        news = ticker.news
+        return news if news else []
+    except Exception:
+        return []
 
 def get_yf_options(symbol: str, expiration_date: Optional[str] = None) -> Dict[str, Any]:
     """

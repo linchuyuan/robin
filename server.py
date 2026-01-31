@@ -10,6 +10,7 @@ from yahoo_finance import get_yf_quote, get_yf_news, get_yf_options
 from account import get_account_profile
 from crypto import get_crypto_quote, get_crypto_positions, place_crypto_order
 from order_history import get_order_history, get_order_detail
+from robin_options import get_option_chain as fetch_option_chain
 
 import robin_stocks.robinhood as rh
 
@@ -116,6 +117,73 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
         return f"Error placing order: {str(e)}"
 
 @mcp.tool()
+def get_option_chain(symbol: str, expiration_date: str = None) -> str:
+    """
+    Fetch option chain data from Robinhood with Greeks.
+    
+    Args:
+        symbol: Stock ticker symbol
+        expiration_date: Optional expiration date (YYYY-MM-DD). If omitted, lists available dates.
+    """
+    try:
+        get_session()
+        data = fetch_option_chain(symbol, expiration_date)
+        
+        if "expirations" in data and "calls" not in data:
+            return f"Available expiration dates for {symbol}:\n" + "\n".join(data["expirations"])
+        
+        output = [f"Option Chain for {symbol} (Exp: {data['expiration_date']})"]
+        current_price = data.get("current_price", 0.0)
+        output.append(f"Current Price: {current_price}\n")
+        
+        def format_option(opt):
+            return (f"Strike: {opt['strike']} | Price: {opt['price']} | "
+                    f"Delta: {opt['delta']:.3f} | Gamma: {opt['gamma']:.3f} | "
+                    f"Theta: {opt['theta']:.3f} | Vega: {opt['vega']:.3f}")
+
+        output.append("CALLS:")
+        calls = data.get("calls", [])
+        
+        calls_below = sorted(
+            [c for c in calls if float(c.get('strike', 0)) < current_price],
+            key=lambda x: float(x.get('strike', 0)),
+            reverse=True
+        )[:5]
+        
+        calls_above = sorted(
+            [c for c in calls if float(c.get('strike', 0)) >= current_price],
+            key=lambda x: float(x.get('strike', 0))
+        )[:5]
+        
+        selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get('strike', 0)))
+        
+        for c in selected_calls:
+            output.append(format_option(c))
+            
+        output.append("\nPUTS:")
+        puts = data.get("puts", [])
+        
+        puts_below = sorted(
+            [p for p in puts if float(p.get('strike', 0)) < current_price],
+            key=lambda x: float(x.get('strike', 0)),
+            reverse=True
+        )[:5]
+        
+        puts_above = sorted(
+            [p for p in puts if float(p.get('strike', 0)) >= current_price],
+            key=lambda x: float(x.get('strike', 0))
+        )[:5]
+        
+        selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get('strike', 0)))
+        
+        for p in selected_puts:
+            output.append(format_option(p))
+            
+        return "\n".join(output)
+    except Exception as e:
+        return f"Error fetching options: {str(e)}"
+
+@mcp.tool()
 def get_yf_stock_quote(symbol: str) -> str:
     """Fetch real-time stock quote from Yahoo Finance."""
     try:
@@ -136,7 +204,11 @@ def get_yf_stock_quote(symbol: str) -> str:
 
 @mcp.tool()
 def get_yf_stock_news(symbol: str) -> str:
-    """Fetch latest news from Yahoo Finance for a symbol."""
+    """Fetch latest news from Yahoo Finance for a symbol.
+    
+    Args:
+        symbol: Stock ticker symbol (e.g. AAPL)
+    """
     try:
         news = get_yf_news(symbol)
         if not news:
@@ -147,7 +219,28 @@ def get_yf_stock_news(symbol: str) -> str:
             title = art.get('title', 'No Title')
             link = art.get('link', '#')
             publisher = art.get('publisher', 'Unknown')
-            summary.append(f"- {title} ({publisher})\n  Link: {link}")
+            
+            # Fallback/Debug: If title is missing, try to find other useful keys
+            if title == 'No Title':
+                 if 'content' in art:
+                     content = art['content']
+                     # Try to extract from content if it's a dict
+                     if isinstance(content, dict):
+                         title = content.get('title', 'No Title in Content')
+                         link = content.get('canonicalUrl', content.get('clickThroughUrl', dict(content).get('url', '#')))
+                         
+                         # Check for provider/publisher in content
+                         pub_data = content.get('provider')
+                         if isinstance(pub_data, dict):
+                             publisher = pub_data.get('displayName', 'Unknown')
+                         
+                     else:
+                         title = f"[Debug: Content is not dict: {type(content)}]"
+                 else:
+                     keys = list(art.keys())
+                     title = f"[Debug: Keys found: {keys}]"
+
+            summary.append(f"- {title} ({publisher})")
         return "\n".join(summary)
     except Exception as e:
         return f"Error fetching Yahoo Finance news: {str(e)}"

@@ -3,6 +3,45 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 import robin_stocks.robinhood as rh
 
+def get_implied_volatility(symbol: str) -> float | None:
+    """Fetch current implied volatility for a symbol."""
+    try:
+        # We can get IV from the chain or options market data
+        # Getting it from the nearest expiration's ATM option is a common proxy
+        chains = rh.get_chains(symbol)
+        if not chains or 'expiration_dates' not in chains:
+            return None
+            
+        # Get the nearest expiration
+        nearest_date = chains['expiration_dates'][0]
+        
+        # Get options for that date
+        options = rh.find_options_by_expiration(symbol, nearest_date)
+        if not options:
+            return None
+            
+        # Filter for active options
+        options = [o for o in options if o.get('state') == 'active']
+        
+        # Calculate IV average from ATM options
+        # We need current price first, but we can infer it or just take an average of high volume ones
+        # A simpler way might be available if robin_stocks exposes 'market_data' directly
+        
+        # Let's try to find the option with strike closest to market price? 
+        # Without market price, we can just average the IV of all options or a subset?
+        # Better: let's just return the IV of the first option for now, or None if too complex to calculate accurately here without quote
+        
+        # Actually, let's fetch quote to find ATM
+        quote = rh.get_quotes(symbol)[0]
+        price = float(quote['last_trade_price'])
+        
+        # Find ATM call
+        atm_option = min(options, key=lambda x: abs(float(x['strike_price']) - price))
+        return float(atm_option.get('implied_volatility') or 0)
+        
+    except:
+        return None
+
 def get_option_chain(symbol: str, expiration_date: Optional[str] = None) -> Dict[str, Any]:
     """
     Fetch options chain for a symbol from Robinhood, including Greeks.

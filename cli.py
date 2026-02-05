@@ -77,13 +77,59 @@ def quote(symbol: str) -> None:
 
 @cli.command()
 def portfolio_cmd() -> None:
+    """List current positions with detailed P/L metrics."""
     get_session()
     positions = list_positions()
     if not positions:
         click.echo("No open positions.")
         return
+        
+    # Header
+    click.echo(f"{'Symbol':<6} {'Qty':>8} {'Price':>10} {'Equity':>10} {'Avg Cost':>10} {'Today P/L':>18} {'Total P/L':>18} {'P/E':>8} {'Mkt Cap':>12} {'52W High':>10} {'52W Low':>10}")
+    click.echo("-" * 130)
+    
     for pos in positions:
-        click.echo(f"{pos['symbol']}: {pos['quantity']} shares at avg {pos['average_buy_price']}")
+        symbol = pos['symbol']
+        qty = f"{pos['quantity']:.4f}"
+        price = f"{pos['price']:.2f}"
+        equity = f"{pos['equity']:.2f}"
+        avg_cost = f"{pos['average_buy_price']:.2f}"
+        
+        # Today's P/L
+        day_pl_val = pos['intraday_profit_loss']
+        day_pl_pct = pos['intraday_percent_change']
+        day_pl = f"{day_pl_val:+.2f} ({day_pl_pct:+.2f}%)"
+        
+        # Total P/L
+        total_pl_val = pos['equity_change']
+        total_pl_pct = pos['percent_change']
+        total_pl = f"{total_pl_val:+.2f} ({total_pl_pct:+.2f}%)"
+
+        pe_ratio = pos.get('pe_ratio')
+        pe_ratio = f"{float(pe_ratio):.2f}" if pe_ratio and pe_ratio != 'N/A' else 'N/A'
+
+        market_cap = pos.get('market_cap')
+        if market_cap and market_cap != 'N/A':
+            # Format large numbers for market cap
+            mc = float(market_cap)
+            if mc >= 1e12:
+                market_cap = f"{mc/1e12:.2f}T"
+            elif mc >= 1e9:
+                market_cap = f"{mc/1e9:.2f}B"
+            elif mc >= 1e6:
+                market_cap = f"{mc/1e6:.2f}M"
+            else:
+                market_cap = f"{mc:.0f}"
+        else:
+            market_cap = 'N/A'
+
+        high_52 = pos.get('high_52_weeks')
+        high_52 = f"{float(high_52):.2f}" if high_52 and high_52 != 'N/A' else 'N/A'
+
+        low_52 = pos.get('low_52_weeks')
+        low_52 = f"{float(low_52):.2f}" if low_52 and low_52 != 'N/A' else 'N/A'
+        
+        click.echo(f"{symbol:<6} {qty:>8} {price:>10} {equity:>10} {avg_cost:>10} {day_pl:>18} {total_pl:>18} {pe_ratio:>8} {market_cap:>12} {high_52:>10} {low_52:>10}")
 
 
 @cli.command()
@@ -171,10 +217,11 @@ def yf_news(symbol: str) -> None:
     except Exception as e:
         click.echo(f"Error fetching Yahoo Finance news: {str(e)}")
 
-@cli.command()
+@click.command()
 @click.argument("symbol")
 @click.option("--expiration", help="Expiration date (YYYY-MM-DD)")
-def yf_options(symbol: str, expiration: str | None) -> None:
+@click.option("--strikes", default=5, help="Number of strikes above/below current price to show.")
+def yf_options(symbol: str, expiration: str | None, strikes: int) -> None:
     """Fetch option chain data from Yahoo Finance."""
     try:
         data = get_yf_options(symbol, expiration)
@@ -192,18 +239,18 @@ def yf_options(symbol: str, expiration: str | None) -> None:
         click.echo("CALLS:")
         calls = data.get("calls", [])
         
-        # Get 5 strikes below current price (closest first)
+        # Get N strikes below current price (closest first)
         calls_below = sorted(
             [c for c in calls if float(c.get('strike', 0)) < current_price],
             key=lambda x: float(x.get('strike', 0)), 
             reverse=True
-        )[:5]
+        )[:strikes]
         
-        # Get 5 strikes above current price (closest first)
+        # Get N strikes above current price (closest first)
         calls_above = sorted(
             [c for c in calls if float(c.get('strike', 0)) >= current_price],
             key=lambda x: float(x.get('strike', 0))
-        )[:5]
+        )[:strikes]
         
         # Combine and sort by strike for display
         selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get('strike', 0)))
@@ -214,18 +261,18 @@ def yf_options(symbol: str, expiration: str | None) -> None:
         click.echo("\nPUTS:")
         puts = data.get("puts", [])
         
-        # Get 5 strikes below current price (closest first)
+        # Get N strikes below current price (closest first)
         puts_below = sorted(
             [p for p in puts if float(p.get('strike', 0)) < current_price],
             key=lambda x: float(x.get('strike', 0)),
             reverse=True
-        )[:5]
+        )[:strikes]
         
-        # Get 5 strikes above current price (closest first)
+        # Get N strikes above current price (closest first)
         puts_above = sorted(
             [p for p in puts if float(p.get('strike', 0)) >= current_price],
             key=lambda x: float(x.get('strike', 0))
-        )[:5]
+        )[:strikes]
         
         # Combine and sort by strike for display
         selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get('strike', 0)))
@@ -239,7 +286,8 @@ def yf_options(symbol: str, expiration: str | None) -> None:
 @cli.command()
 @click.argument("symbol")
 @click.option("--expiration", help="Expiration date (YYYY-MM-DD)")
-def options(symbol: str, expiration: str | None) -> None:
+@click.option("--strikes", default=5, help="Number of strikes above/below current price to show.")
+def options(symbol: str, expiration: str | None, strikes: int) -> None:
     """Fetch option chain data from Robinhood (with Greeks)."""
     get_session()
     try:
@@ -267,12 +315,12 @@ def options(symbol: str, expiration: str | None) -> None:
             [c for c in calls if float(c.get('strike', 0)) < current_price],
             key=lambda x: float(x.get('strike', 0)),
             reverse=True
-        )[:5]
+        )[:strikes]
         
         calls_above = sorted(
             [c for c in calls if float(c.get('strike', 0)) >= current_price],
             key=lambda x: float(x.get('strike', 0))
-        )[:5]
+        )[:strikes]
         
         selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get('strike', 0)))
         
@@ -286,12 +334,12 @@ def options(symbol: str, expiration: str | None) -> None:
             [p for p in puts if float(p.get('strike', 0)) < current_price],
             key=lambda x: float(x.get('strike', 0)),
             reverse=True
-        )[:5]
+        )[:strikes]
         
         puts_above = sorted(
             [p for p in puts if float(p.get('strike', 0)) >= current_price],
             key=lambda x: float(x.get('strike', 0))
-        )[:5]
+        )[:strikes]
         
         selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get('strike', 0)))
         
@@ -308,9 +356,12 @@ def account() -> None:
     profile = get_account_profile()
     
     click.echo(f"Buying Power: {profile.get('buying_power')}")
+    click.echo(f"Total Cash: {profile.get('cash')}")
     click.echo(f"Cash Available for Withdrawal: {profile.get('cash_available_for_withdrawal')}")
     click.echo(f"Cash Held for Orders: {profile.get('cash_held_for_orders')}")
     click.echo(f"Unsettled Funds: {profile.get('unsettled_funds')}")
+    click.echo(f"Total Equity: {profile.get('equity')}")
+    click.echo(f"Market Value: {profile.get('market_value')}")
 
 @cli.command()
 @click.argument("symbol")
@@ -411,6 +462,35 @@ def order_detail(order_id: str) -> None:
         
     except Exception as e:
         click.echo(f"Error fetching order details: {str(e)}")
+
+@cli.command()
+@click.argument("symbol")
+def fundamentals(symbol: str) -> None:
+    """Fetch fundamental data for a stock."""
+    get_session()
+    try:
+        data = rh.get_fundamentals(symbol)
+        if not data or not isinstance(data, list) or len(data) == 0:
+            click.echo(f"No fundamentals found for {symbol}.")
+            return
+        
+        f = data[0]
+        # Format and display key attributes
+        click.echo(f"--- Fundamentals for {f.get('symbol')} ---")
+        click.echo(f"Open:           {f.get('open')}")
+        click.echo(f"High:           {f.get('high')}")
+        click.echo(f"Low:            {f.get('low')}")
+        click.echo(f"Market Cap:     {f.get('market_cap')}")
+        click.echo(f"P/E Ratio:      {f.get('pe_ratio')}")
+        click.echo(f"Div Yield:      {f.get('dividend_yield')}")
+        click.echo(f"52 Wk High:     {f.get('high_52_weeks')}")
+        click.echo(f"52 Wk Low:      {f.get('low_52_weeks')}")
+        click.echo(f"Volume:         {f.get('volume')}")
+        click.echo(f"Avg Vol (30d):  {f.get('average_volume_30_days')}")
+        click.echo(f"CEO:            {f.get('ceo')}")
+        
+    except Exception as e:
+        click.echo(f"Error fetching fundamentals: {str(e)}")
 
 if __name__ == "__main__":
     cli()

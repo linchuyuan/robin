@@ -10,11 +10,20 @@ def get_account_profile() -> Dict[str, Any]:
     :return: Dictionary containing account profile information
     """
     profile = rh.load_account_profile()
+    
+    # Fetch portfolio profile for equity/market value
+    try:
+        portfolio = rh.load_portfolio_profile()
+    except:
+        portfolio = {}
+
     return {
         "buying_power": profile.get("buying_power"),
         "cash": profile.get("cash"),
         "cash_available_for_withdrawal": profile.get("cash_available_for_withdrawal"),
         "cash_held_for_orders": profile.get("cash_held_for_orders"),
         "unsettled_funds": profile.get("unsettled_funds"),
-        "portfolio_cash": profile.get("portfolio_cash")
+        "portfolio_cash": profile.get("portfolio_cash"),
+        "equity": portfolio.get("equity"),
+        "market_value": portfolio.get("market_value")
     }

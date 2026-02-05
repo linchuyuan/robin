@@ -1,5 +1,6 @@
 """MCP Server for Robinhood Skills."""
 import argparse
+from datetime import datetime
 
 from fastmcp import FastMCP
 from auth import get_session
@@ -46,7 +47,7 @@ def cancel_order(order_id: str) -> str:
 
 @mcp.tool()
 def get_portfolio() -> str:
-    """Get the current user's open stock positions."""
+    """Get the current user's open stock positions with detailed P/L."""
     try:
         get_session()
         positions = list_positions()
@@ -55,7 +56,19 @@ def get_portfolio() -> str:
         
         result = []
         for pos in positions:
-            result.append(f"{pos['symbol']}: {pos['quantity']} shares @ ${pos['average_buy_price']}")
+            # Format: SYMBOL: Qty @ AvgCost | Equity: $X | Day P/L: $X (X%) | Total P/L: $X (X%)
+            day_pl = f"{pos['intraday_profit_loss']:+.2f} ({pos['intraday_percent_change']:+.2f}%)"
+            total_pl = f"{pos['equity_change']:+.2f} ({pos['percent_change']:+.2f}%)"
+            
+            line = (f"{pos['symbol']}: {pos['quantity']} shares @ ${pos['average_buy_price']:.2f} | "
+                    f"Equity: ${pos['equity']:.2f} | "
+                    f"Day P/L: {day_pl} | "
+                    f"Total P/L: {total_pl} | "
+                    f"P/E: {pos.get('pe_ratio', 'N/A')} | "
+                    f"Mkt Cap: {pos.get('market_cap', 'N/A')} | "
+                    f"52W High: {pos.get('high_52_weeks', 'N/A')} | "
+                    f"52W Low: {pos.get('low_52_weeks', 'N/A')}")
+            result.append(line)
         return "\n".join(result)
     except Exception as e:
         return f"Error fetching portfolio: {str(e)}"
@@ -117,13 +130,14 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
         return f"Error placing order: {str(e)}"
 
 @mcp.tool()
-def get_option_chain(symbol: str, expiration_date: str = None) -> str:
+def get_option_chain(symbol: str, expiration_date: str = None, strikes: int = 5) -> str:
     """
     Fetch option chain data from Robinhood with Greeks.
     
     Args:
         symbol: Stock ticker symbol
         expiration_date: Optional expiration date (YYYY-MM-DD). If omitted, lists available dates.
+        strikes: Number of strikes above/below current price to show (default: 5).
     """
     try:
         get_session()
@@ -148,12 +162,12 @@ def get_option_chain(symbol: str, expiration_date: str = None) -> str:
             [c for c in calls if float(c.get('strike', 0)) < current_price],
             key=lambda x: float(x.get('strike', 0)),
             reverse=True
-        )[:5]
+        )[:strikes]
         
         calls_above = sorted(
             [c for c in calls if float(c.get('strike', 0)) >= current_price],
             key=lambda x: float(x.get('strike', 0))
-        )[:5]
+        )[:strikes]
         
         selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get('strike', 0)))
         
@@ -167,12 +181,12 @@ def get_option_chain(symbol: str, expiration_date: str = None) -> str:
             [p for p in puts if float(p.get('strike', 0)) < current_price],
             key=lambda x: float(x.get('strike', 0)),
             reverse=True
-        )[:5]
+        )[:strikes]
         
         puts_above = sorted(
             [p for p in puts if float(p.get('strike', 0)) >= current_price],
             key=lambda x: float(x.get('strike', 0))
-        )[:5]
+        )[:strikes]
         
         selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get('strike', 0)))
         
@@ -246,13 +260,14 @@ def get_yf_stock_news(symbol: str) -> str:
         return f"Error fetching Yahoo Finance news: {str(e)}"
 
 @mcp.tool()
-def get_yf_option_chain(symbol: str, expiration_date: str = None) -> str:
+def get_yf_option_chain(symbol: str, expiration_date: str = None, strikes: int = 5) -> str:
     """
     Fetch option chain data from Yahoo Finance.
     
     Args:
         symbol: Stock ticker symbol
         expiration_date: Optional expiration date (YYYY-MM-DD). If omitted, lists available dates.
+        strikes: Number of strikes above/below current price to show (default: 5).
     """
     try:
         data = get_yf_options(symbol, expiration_date)
@@ -271,12 +286,12 @@ def get_yf_option_chain(symbol: str, expiration_date: str = None) -> str:
             [c for c in calls if float(c.get('strike', 0)) < current_price],
             key=lambda x: float(x.get('strike', 0)),
             reverse=True
-        )[:5]
+        )[:strikes]
         
         calls_above = sorted(
             [c for c in calls if float(c.get('strike', 0)) >= current_price],
             key=lambda x: float(x.get('strike', 0))
-        )[:5]
+        )[:strikes]
         
         selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get('strike', 0)))
         
@@ -290,12 +305,12 @@ def get_yf_option_chain(symbol: str, expiration_date: str = None) -> str:
             [p for p in puts if float(p.get('strike', 0)) < current_price],
             key=lambda x: float(x.get('strike', 0)),
             reverse=True
-        )[:5]
+        )[:strikes]
         
         puts_above = sorted(
             [p for p in puts if float(p.get('strike', 0)) >= current_price],
             key=lambda x: float(x.get('strike', 0))
-        )[:5]
+        )[:strikes]
         
         selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get('strike', 0)))
         
@@ -314,9 +329,12 @@ def get_account_info() -> str:
         profile = get_account_profile()
         return (
             f"Buying Power: {profile.get('buying_power')}\n"
+            f"Total Cash: {profile.get('cash')}\n"
             f"Cash Available for Withdrawal: {profile.get('cash_available_for_withdrawal')}\n"
             f"Cash Held for Orders: {profile.get('cash_held_for_orders')}\n"
-            f"Unsettled Funds: {profile.get('unsettled_funds')}"
+            f"Unsettled Funds: {profile.get('unsettled_funds')}\n"
+            f"Total Equity: {profile.get('equity')}\n"
+            f"Market Value: {profile.get('market_value')}"
         )
     except Exception as e:
         return f"Error fetching account info: {str(e)}"
@@ -426,6 +444,40 @@ def get_order_details(order_id: str) -> str:
         return "\n".join(details)
     except Exception as e:
         return f"Error fetching order details: {str(e)}"
+
+@mcp.tool()
+def get_fundamentals(symbol: str) -> str:
+    """Get fundamental data for a stock (P/E, Market Cap, etc).
+    
+    Args:
+        symbol: Stock ticker (e.g. AAPL)
+    """
+    try:
+        get_session()
+        data = rh.get_fundamentals(symbol)
+        if not data or not isinstance(data, list) or len(data) == 0:
+            return f"No fundamentals found for {symbol}."
+        
+        f = data[0]
+        return (
+            f"Symbol: {f.get('symbol')}\n"
+            f"Open: {f.get('open')}\n"
+            f"High: {f.get('high')}\n"
+            f"Low: {f.get('low')}\n"
+            f"Market Cap: {f.get('market_cap')}\n"
+            f"P/E Ratio: {f.get('pe_ratio')}\n"
+            f"Div Yield: {f.get('dividend_yield')}\n"
+            f"52 Wk High: {f.get('high_52_weeks')}\n"
+            f"52 Wk Low: {f.get('low_52_weeks')}\n"
+            f"Avg Vol: {f.get('average_volume')}"
+        )
+    except Exception as e:
+        return f"Error fetching fundamentals: {str(e)}"
+
+@mcp.tool()
+def get_timestamp() -> str:
+    """Get the current server timestamp."""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the Robinhood MCP server")

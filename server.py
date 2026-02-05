@@ -6,12 +6,14 @@ from fastmcp import FastMCP
 from auth import get_session
 from portfolio import list_positions
 from market_data import get_history, get_news
+from macro_news import get_macro_news
 from orders import place_order
 from yahoo_finance import get_yf_quote, get_yf_news, get_yf_options
 from account import get_account_profile
 from crypto import get_crypto_quote, get_crypto_positions, place_crypto_order
 from order_history import get_order_history, get_order_detail
 from robin_options import get_option_chain as fetch_option_chain
+from sentiment import get_fear_and_greed, get_vix
 
 import robin_stocks.robinhood as rh
 
@@ -473,6 +475,68 @@ def get_fundamentals(symbol: str) -> str:
         )
     except Exception as e:
         return f"Error fetching fundamentals: {str(e)}"
+
+@mcp.tool()
+def get_market_sentiment() -> str:
+    """Get market sentiment (Fear & Greed Index and VIX)."""
+    output = []
+    
+    # Fear & Greed
+    fg = get_fear_and_greed()
+    if "error" in fg:
+        output.append(f"Fear & Greed: Error ({fg['error']})")
+    else:
+        # Format timestamp if available
+        ts = fg.get('timestamp')
+        try:
+            # Timestamp might be ISO string
+            if ts:
+                ts_str = ts.replace('T', ' ')[:19]
+            else:
+                ts_str = "N/A"
+        except:
+            ts_str = str(ts)
+            
+        output.append("--- Fear & Greed Index ---")
+        output.append(f"Score: {fg.get('score', 0):.0f} ({fg.get('rating', 'Unknown')})")
+        output.append(f"Previous: {fg.get('previous_close', 0):.0f}")
+        output.append(f"Updated: {ts_str}")
+
+    output.append("")
+
+    # VIX
+    vix = get_vix()
+    if "error" in vix:
+        output.append(f"VIX: Error ({vix['error']})")
+    else:
+        output.append("--- VIX (Volatility Index) ---")
+        output.append(f"Price: {vix.get('price')}")
+        output.append(f"Change: {vix.get('change', 0):+.2f} ({vix.get('percent_change', 0):+.2f}%)")
+        output.append(f"Day Range: {vix.get('day_low')} - {vix.get('day_high')}")
+        output.append(f"52W Range: {vix.get('52_week_low')} - {vix.get('52_week_high')}")
+
+    return "\n".join(output)
+
+@mcp.tool()
+def get_macro_news_headlines(limit: int = 5) -> str:
+    """Get latest macroeconomic news headlines (CNBC Economy).
+    
+    Args:
+        limit: Number of news items to return (default: 5)
+    """
+    news_items = get_macro_news(limit)
+    if not news_items:
+        return "No macro news found."
+    
+    if "error" in news_items[0]:
+        return f"Error fetching news: {news_items[0]['error']}"
+        
+    output = ["--- Macroeconomic News (Source: CNBC) ---"]
+    for item in news_items:
+        output.append(f"- {item['title']} ({item['published']})")
+        output.append(f"  Link: {item['link']}")
+        
+    return "\n".join(output)
 
 @mcp.tool()
 def get_timestamp() -> str:

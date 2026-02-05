@@ -52,6 +52,8 @@ A lightweight Python CLI for placing orders on Robinhood with a safety-first wor
 | `python cli.py options SYMBOL` | Fetch option chain data from Robinhood (with Greeks). Use `--expiration` for specific dates and `--strikes` (default: 5) to control depth. |
 | `python cli.py yf-options SYMBOL` | View option chains via Yahoo Finance. Use `--expiration` for specific dates and `--strikes` (default: 5) to control depth. |
 | `python cli.py fundamentals SYMBOL` | Fetch key fundamental stats (P/E, Market Cap, 52-week range, Volume, Sector, etc.). |
+| `python cli.py sentiment` | Get market sentiment (Fear & Greed Index, VIX). |
+| `python cli.py macro` | Get latest macroeconomic news headlines (CNBC Economy). |
 
 Each command shares common options via a decorator (e.g., `--debug`, `--dry-run`) so the user can preview requests without submitting them.
 
@@ -114,6 +116,8 @@ This project includes a Model Context Protocol (MCP) server, allowing AI agents 
 - `get_yf_option_chain`: Get option chain (Yahoo). Supports `strikes` parameter.
 - `get_crypto_price`: Get crypto quote.
 - `get_fundamentals`: Get P/E, Market Cap, and other stats (Robinhood).
+- `get_market_sentiment`: Get Fear & Greed Index and VIX.
+- `get_macro_news_headlines`: Get latest macroeconomic news headlines (CNBC).
 - `get_timestamp`: Get current server timestamp.
 - `get_crypto_holdings`: Get crypto positions.
 - `execute_crypto_order`: Place crypto orders.

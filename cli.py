@@ -11,9 +11,11 @@ from orders import OrderValidationError, place_order
 from portfolio import get_quote, list_positions
 from account import get_account_profile
 from market_data import get_history, get_news
+from macro_news import get_macro_news
 from yahoo_finance import get_yf_quote, get_yf_news, get_yf_options
 from order_history import get_order_history, get_order_detail
 from robin_options import get_option_chain
+from sentiment import get_fear_and_greed, get_vix
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -491,6 +493,57 @@ def fundamentals(symbol: str) -> None:
         
     except Exception as e:
         click.echo(f"Error fetching fundamentals: {str(e)}")
+
+@cli.command()
+def sentiment() -> None:
+    """Get market sentiment (Fear & Greed, VIX)."""
+    # Fear & Greed
+    fg = get_fear_and_greed()
+    if "error" in fg:
+        click.echo(f"Fear & Greed: Error ({fg['error']})")
+    else:
+        click.echo("--- Fear & Greed Index ---")
+        score = fg.get('score', 0)
+        rating = fg.get('rating', 'Unknown').upper()
+        click.echo(f"Score:    {score:.0f}/100")
+        click.echo(f"Rating:   {rating}")
+        click.echo(f"Previous: {fg.get('previous_close', 0):.0f}")
+    
+    click.echo("")
+    
+    # VIX
+    vix = get_vix()
+    if "error" in vix:
+        click.echo(f"VIX: Error ({vix['error']})")
+    else:
+        click.echo("--- VIX (Volatility) ---")
+        price = vix.get('price')
+        change = vix.get('change', 0)
+        pct = vix.get('percent_change', 0)
+        
+        # Colorize if possible (not using colors here to keep it simple)
+        click.echo(f"Price:    {price}")
+        click.echo(f"Change:   {change:+.2f} ({pct:+.2f}%)")
+        click.echo(f"Range:    {vix.get('day_low')} - {vix.get('day_high')}")
+
+@cli.command()
+@click.option('--limit', default=5, help='Number of news items to fetch')
+def macro(limit: int) -> None:
+    """Get latest macroeconomic news headlines."""
+    news_items = get_macro_news(limit)
+    if not news_items:
+        click.echo("No macro news found.")
+        return
+        
+    if "error" in news_items[0]:
+        click.echo(f"Error fetching news: {news_items[0]['error']}")
+        return
+        
+    click.echo("--- Macroeconomic News (Source: CNBC) ---")
+    for item in news_items:
+        click.echo(f"- {item['title']}")
+        click.echo(f"  {item['published']}")
+        click.echo(f"  {item['link']}\n")
 
 if __name__ == "__main__":
     cli()

@@ -14,6 +14,7 @@ from crypto import get_crypto_quote, get_crypto_positions, place_crypto_order
 from order_history import get_order_history, get_order_detail
 from robin_options import get_option_chain as fetch_option_chain
 from sentiment import get_fear_and_greed, get_vix
+from market_calendar import get_market_status, get_upcoming_holidays, get_early_closes
 
 import robin_stocks.robinhood as rh
 
@@ -518,22 +519,26 @@ def get_market_sentiment() -> str:
     return "\n".join(output)
 
 @mcp.tool()
-def get_macro_news_headlines(limit: int = 5) -> str:
-    """Get latest macroeconomic news headlines (CNBC Economy).
+def get_macro_news_headlines(limit: int = 10, only_today: bool = False) -> str:
+    """Get latest macroeconomic news headlines (Aggregated).
     
     Args:
-        limit: Number of news items to return (default: 5)
+        limit: Number of news items to return (default: 10)
+        only_today: If True, only return news published today (default: False)
     """
-    news_items = get_macro_news(limit)
+    news_items = get_macro_news(limit, only_today=only_today)
     if not news_items:
-        return "No macro news found."
+        msg = "No macro news found"
+        if only_today:
+            msg += " for today"
+        return f"{msg}."
     
     if "error" in news_items[0]:
         return f"Error fetching news: {news_items[0]['error']}"
         
-    output = ["--- Macroeconomic News (Source: CNBC) ---"]
+    output = []
     for item in news_items:
-        output.append(f"- {item['title']} ({item['published']})")
+        output.append(f"- [{item.get('source', 'Unknown')}] {item['title']} ({item['published']})")
         output.append(f"  Link: {item['link']}")
         
     return "\n".join(output)
@@ -542,6 +547,44 @@ def get_macro_news_headlines(limit: int = 5) -> str:
 def get_timestamp() -> str:
     """Get the current server timestamp."""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+@mcp.tool()
+def get_market_session() -> str:
+    """Get current market session status (pre-market, regular, after-hours, closed), today's schedule, and next open/close times."""
+    status = get_market_status()
+
+    lines = []
+    lines.append(f"Session: {status['session'].upper()}")
+    lines.append(f"Time: {status['timestamp']}")
+    lines.append(f"Trading Day: {'Yes' if status['is_trading_day'] else 'No'}")
+
+    if status['holiday']:
+        lines.append(f"Reason: {status['holiday']}")
+
+    if status['is_early_close']:
+        lines.append(f"Early Close: Yes")
+
+    if status['schedule']:
+        s = status['schedule']
+        lines.append(f"Pre-Market: {s['premarket_open']}")
+        lines.append(f"Open: {s['regular_open']}")
+        lines.append(f"Close: {s['regular_close']}")
+        lines.append(f"After-Hours: until {s['afterhours_close']}")
+
+    if status['next_open']:
+        lines.append(f"Next Open: {status['next_open']}")
+    if status['next_close']:
+        lines.append(f"Next Close: {status['next_close']}")
+
+    # Add upcoming holidays
+    hols = get_upcoming_holidays(3)
+    if hols:
+        lines.append("")
+        lines.append("Upcoming Holidays:")
+        for h in hols:
+            lines.append(f"  {h['date']} ({h['day']})")
+
+    return "\n".join(lines)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the Robinhood MCP server")

@@ -53,7 +53,8 @@ A lightweight Python CLI for placing orders on Robinhood with a safety-first wor
 | `python cli.py yf-options SYMBOL` | View option chains via Yahoo Finance. Use `--expiration` for specific dates and `--strikes` (default: 5) to control depth. |
 | `python cli.py fundamentals SYMBOL` | Fetch key fundamental stats (P/E, Market Cap, 52-week range, Volume, Sector, etc.). |
 | `python cli.py sentiment` | Get market sentiment (Fear & Greed Index, VIX). |
-| `python cli.py macro` | Get latest macroeconomic news headlines (CNBC Economy). |
+| `python cli.py macro` | Get aggregated latest macroeconomic news from Investing.com, Bloomberg, and CNBC. Supports `--limit` (default: 10) and `--today`. |
+| `python cli.py market-status` | Show current market session (pre-market, regular, after-hours, closed), today's schedule, and next open/close. Use `--holidays` or `--early-closes` for calendar info. |
 
 Each command shares common options via a decorator (e.g., `--debug`, `--dry-run`) so the user can preview requests without submitting them.
 
@@ -117,7 +118,8 @@ This project includes a Model Context Protocol (MCP) server, allowing AI agents 
 - `get_crypto_price`: Get crypto quote.
 - `get_fundamentals`: Get P/E, Market Cap, and other stats (Robinhood).
 - `get_market_sentiment`: Get Fear & Greed Index and VIX.
-- `get_macro_news_headlines`: Get latest macroeconomic news headlines (CNBC).
+- `get_macro_news_headlines`: Get aggregated latest macroeconomic news. Supports `limit` and `only_today`.
+- `get_market_session`: Get current market session status (pre-market/regular/after-hours/closed), schedule, holidays, and next open/close.
 - `get_timestamp`: Get current server timestamp.
 - `get_crypto_holdings`: Get crypto positions.
 - `execute_crypto_order`: Place crypto orders.

@@ -16,6 +16,7 @@ from yahoo_finance import get_yf_quote, get_yf_news, get_yf_options
 from order_history import get_order_history, get_order_detail
 from robin_options import get_option_chain
 from sentiment import get_fear_and_greed, get_vix
+from market_calendar import get_market_status, get_upcoming_holidays, get_early_closes
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -527,23 +528,76 @@ def sentiment() -> None:
         click.echo(f"Range:    {vix.get('day_low')} - {vix.get('day_high')}")
 
 @cli.command()
-@click.option('--limit', default=5, help='Number of news items to fetch')
-def macro(limit: int) -> None:
-    """Get latest macroeconomic news headlines."""
-    news_items = get_macro_news(limit)
+@click.option('--limit', default=10, help='Number of news items to fetch')
+@click.option('--today', is_flag=True, help='Only show news from today')
+def macro(limit: int, today: bool) -> None:
+    """Get latest macroeconomic news headlines (Aggregated)."""
+    news_items = get_macro_news(limit, only_today=today)
     if not news_items:
-        click.echo("No macro news found.")
+        msg = "No macro news found"
+        if today:
+            msg += " for today"
+        click.echo(f"{msg}.")
         return
         
     if "error" in news_items[0]:
         click.echo(f"Error fetching news: {news_items[0]['error']}")
         return
         
-    click.echo("--- Macroeconomic News (Source: CNBC) ---")
     for item in news_items:
-        click.echo(f"- {item['title']}")
+        click.echo(f"[{item.get('source', 'Unknown')}] {item['title']}")
         click.echo(f"  {item['published']}")
         click.echo(f"  {item['link']}\n")
+
+@cli.command()
+@click.option('--holidays', is_flag=True, help='Show upcoming market holidays')
+@click.option('--early-closes', 'early', is_flag=True, help='Show early close dates this year')
+def market_status(holidays: bool, early: bool) -> None:
+    """Show current market session status and schedule."""
+    if holidays:
+        hols = get_upcoming_holidays()
+        if not hols:
+            click.echo("No upcoming holidays found.")
+            return
+        click.echo("Upcoming Market Holidays:")
+        for h in hols:
+            click.echo(f"  {h['date']} ({h['day']})")
+        return
+
+    if early:
+        closes = get_early_closes()
+        if not closes:
+            click.echo("No early closes found this year.")
+            return
+        click.echo("Early Close Dates:")
+        for e in closes:
+            click.echo(f"  {e['date']} ({e['day']}) closes at {e['close_time']}")
+        return
+
+    status = get_market_status()
+
+    session = status['session'].upper()
+    click.echo(f"Session:      {session}")
+    click.echo(f"Time:         {status['timestamp']}")
+    click.echo(f"Trading Day:  {'Yes' if status['is_trading_day'] else 'No'}")
+
+    if status['holiday']:
+        click.echo(f"Reason:       {status['holiday']}")
+
+    if status['is_early_close']:
+        click.echo(f"Early Close:  Yes")
+
+    if status['schedule']:
+        s = status['schedule']
+        click.echo(f"Pre-Market:   {s['premarket_open']}")
+        click.echo(f"Open:         {s['regular_open']}")
+        click.echo(f"Close:        {s['regular_close']}")
+        click.echo(f"After-Hours:  until {s['afterhours_close']}")
+
+    if status['next_open']:
+        click.echo(f"Next Open:    {status['next_open']}")
+    if status['next_close']:
+        click.echo(f"Next Close:   {status['next_close']}")
 
 if __name__ == "__main__":
     cli()

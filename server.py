@@ -92,25 +92,44 @@ def get_portfolio() -> str:
         return f"Error fetching portfolio: {str(e)}"
 
 @mcp.tool()
-def get_stock_news(symbol: str) -> str:
-    """Fetch recent news articles for a specific stock ticker."""
+def get_stock_news(symbol: str) -> dict:
+    """Fetch recent news articles for a specific stock ticker.
+
+    Returns a structured payload (JSON-serializable) so downstream agents can parse it.
+    """
     try:
         get_session()
-        articles = get_news(symbol.upper())
-        if not articles:
-            return f"No news found for {symbol}."
-        
-        summary = []
-        for art in articles[:5]:
-            summary.append(f"- {art['title']} ({art['published_at']})\n  Link: {art['url']}")
-        return "\n".join(summary)
+        sym = symbol.upper()
+        articles = get_news(sym) or []
+
+        top = articles[:5]
+        lines = []
+        if not top:
+            lines.append(f"No news found for {sym}.")
+        else:
+            for art in top:
+                lines.append(f"- {art.get('title', 'N/A')} ({art.get('published_at', 'N/A')})\n  Link: {art.get('url', 'N/A')}")
+
+        return {
+            "symbol": sym,
+            "articles": top,
+            "result_text": "\n".join(lines),
+        }
     except Exception as e:
-        return f"Error fetching news: {str(e)}"
+        return {
+            "symbol": symbol.upper(),
+            "articles": [],
+            "error": str(e),
+            "result_text": f"Error fetching news: {str(e)}",
+        }
 
 @mcp.tool()
-def get_stock_history(symbol: str, span: str = "week", interval: str = "day") -> str:
+def get_stock_history(symbol: str, span: str = "week", interval: str = "day") -> dict:
     """Get historical OHLCV price data for a stock.
-    
+
+    NOTE: This now returns a structured JSON payload with a `candles` array.
+    A CSV string is also included for backwards compatibility.
+
     Args:
         symbol: Stock ticker (e.g. AAPL)
         span: Time span (day, week, month, 3month, year, 5year)
@@ -118,16 +137,42 @@ def get_stock_history(symbol: str, span: str = "week", interval: str = "day") ->
     """
     try:
         get_session()
-        data = get_history(symbol.upper(), interval, span)
+        sym = symbol.upper()
+        data = get_history(sym, interval, span) or []
         if not data:
-            return f"No history found for {symbol}."
-        
+            return {
+                "symbol": sym,
+                "span": span,
+                "interval": interval,
+                "candles": [],
+                "csv": "",
+                "result_text": f"No history found for {sym}.",
+            }
+
         lines = ["Date,Open,High,Low,Close,Volume"]
         for point in data:
-            lines.append(f"{point['begins_at']},{point['open_price']},{point['high_price']},{point['low_price']},{point['close_price']},{point.get('volume', 0)}")
-        return "\n".join(lines)
+            lines.append(
+                f"{point.get('begins_at')},{point.get('open_price')},{point.get('high_price')},{point.get('low_price')},{point.get('close_price')},{point.get('volume', 0)}"
+            )
+
+        return {
+            "symbol": sym,
+            "span": span,
+            "interval": interval,
+            "candles": data,
+            "csv": "\n".join(lines),
+            "result_text": "\n".join(lines),
+        }
     except Exception as e:
-        return f"Error fetching history: {str(e)}"
+        return {
+            "symbol": symbol.upper(),
+            "span": span,
+            "interval": interval,
+            "candles": [],
+            "csv": "",
+            "error": str(e),
+            "result_text": f"Error fetching history: {str(e)}",
+        }
 
 @mcp.tool()
 def execute_order(symbol: str, qty: float, side: str, order_type: str = "market",
@@ -225,27 +270,25 @@ def get_option_chain(symbol: str, expiration_date: str = None, strikes: int = 5)
         return f"Error fetching options: {str(e)}"
 
 @mcp.tool()
-def get_yf_stock_quote(symbol: str) -> str:
+def get_yf_stock_quote(symbol: str) -> dict:
     """Fetch real-time stock quote from Yahoo Finance with detailed market data.
-    
-    Returns: price, bid/ask, volume (with relative volume), moving averages,
-    fundamentals (P/E, beta, margins, growth), sector/industry, earnings date,
-    and short interest.
+
+    NOTE: Returns structured JSON for machine parsing, plus a `result_text` string.
     """
     try:
         quote = get_yf_quote(symbol)
         lines = [
-            f"Symbol: {quote['symbol']}",
-            f"Price: {quote['current_price']}",
+            f"Symbol: {quote.get('symbol')}",
+            f"Price: {quote.get('current_price')}",
             f"Previous Close: {quote.get('previous_close')}",
-            f"Open: {quote['open']}",
-            f"High: {quote['high']}",
-            f"Low: {quote['low']}",
+            f"Open: {quote.get('open')}",
+            f"High: {quote.get('high')}",
+            f"Low: {quote.get('low')}",
             f"Bid: {quote.get('bid')} | Ask: {quote.get('ask')}",
-            f"Volume: {quote['volume']} | Avg Volume: {quote.get('average_volume')} | Relative Volume: {quote.get('relative_volume')}",
-            f"Market Cap: {quote['market_cap']}",
-            f"P/E Ratio: {quote['pe_ratio']} | Forward P/E: {quote.get('forward_pe')}",
-            f"Dividend Yield: {quote['dividend_yield']}",
+            f"Volume: {quote.get('volume')} | Avg Volume: {quote.get('average_volume')} | Relative Volume: {quote.get('relative_volume')}",
+            f"Market Cap: {quote.get('market_cap')}",
+            f"P/E Ratio: {quote.get('pe_ratio')} | Forward P/E: {quote.get('forward_pe')}",
+            f"Dividend Yield: {quote.get('dividend_yield')}",
             f"Beta: {quote.get('beta')}",
             f"52W High: {quote.get('52_week_high')} | 52W Low: {quote.get('52_week_low')}",
             f"50-Day Avg: {quote.get('50_day_avg')} | 200-Day Avg: {quote.get('200_day_avg')}",
@@ -254,52 +297,55 @@ def get_yf_stock_quote(symbol: str) -> str:
             f"Profit Margins: {quote.get('profit_margins')} | Revenue Growth: {quote.get('revenue_growth')}",
             f"Short Ratio: {quote.get('short_ratio')}",
         ]
-        return "\n".join(lines)
+        return {
+            "symbol": (quote.get('symbol') or str(symbol).upper()),
+            "quote": quote,
+            "result_text": "\n".join(lines),
+        }
     except Exception as e:
-        return f"Error fetching Yahoo Finance quote: {str(e)}"
+        return {
+            "symbol": str(symbol).upper(),
+            "quote": {},
+            "error": str(e),
+            "result_text": f"Error fetching Yahoo Finance quote: {str(e)}",
+        }
 
 @mcp.tool()
-def get_yf_stock_news(symbol: str) -> str:
+def get_yf_stock_news(symbol: str) -> dict:
     """Fetch latest news from Yahoo Finance for a symbol.
-    
+
+    NOTE: Returns structured JSON for machine parsing, plus a `result_text` string.
+
     Args:
         symbol: Stock ticker symbol (e.g. AAPL)
     """
+    sym = str(symbol).upper()
     try:
-        news = get_yf_news(symbol)
-        if not news:
-            return f"No Yahoo Finance news found for {symbol}."
-        
-        summary = []
-        for art in news[:5]:
-            title = art.get('title', 'No Title')
-            link = art.get('link', '#')
-            publisher = art.get('publisher', 'Unknown')
-            
-            # Fallback/Debug: If title is missing, try to find other useful keys
-            if title == 'No Title':
-                 if 'content' in art:
-                     content = art['content']
-                     # Try to extract from content if it's a dict
-                     if isinstance(content, dict):
-                         title = content.get('title', 'No Title in Content')
-                         link = content.get('canonicalUrl', content.get('clickThroughUrl', dict(content).get('url', '#')))
-                         
-                         # Check for provider/publisher in content
-                         pub_data = content.get('provider')
-                         if isinstance(pub_data, dict):
-                             publisher = pub_data.get('displayName', 'Unknown')
-                         
-                     else:
-                         title = f"[Debug: Content is not dict: {type(content)}]"
-                 else:
-                     keys = list(art.keys())
-                     title = f"[Debug: Keys found: {keys}]"
+        news = get_yf_news(sym) or []
+        top = news[:5]
 
-            summary.append(f"- {title} ({publisher})")
-        return "\n".join(summary)
+        summary = []
+        if not top:
+            summary.append(f"No Yahoo Finance news found for {sym}.")
+        else:
+            for art in top:
+                title = art.get('title') or 'No Title'
+                publisher = art.get('publisher') or 'Unknown'
+                link = art.get('link') or art.get('url') or '#'
+                summary.append(f"- {title} ({publisher})\n  Link: {link}")
+
+        return {
+            "symbol": sym,
+            "articles": top,
+            "result_text": "\n".join(summary),
+        }
     except Exception as e:
-        return f"Error fetching Yahoo Finance news: {str(e)}"
+        return {
+            "symbol": sym,
+            "articles": [],
+            "error": str(e),
+            "result_text": f"Error fetching Yahoo Finance news: {str(e)}",
+        }
 
 @mcp.tool()
 def get_yf_option_chain(symbol: str, expiration_date: str = None, strikes: int = 5) -> str:
@@ -544,27 +590,35 @@ def get_order_details(order_id: str) -> str:
         return f"Error fetching order details: {str(e)}"
 
 @mcp.tool()
-def get_fundamentals(symbol: str) -> str:
+def get_fundamentals(symbol: str) -> dict:
     """Get fundamental data for a stock (P/E, Market Cap, sector, etc).
-    
+
+    NOTE: Returns structured JSON for machine parsing, plus a `result_text` string.
+
     Args:
         symbol: Stock ticker (e.g. AAPL)
     """
+    sym = str(symbol).upper()
     try:
         get_session()
-        data = rh.get_fundamentals(symbol)
+        data = rh.get_fundamentals(sym)
         if not data or not isinstance(data, list) or len(data) == 0:
-            return f"No fundamentals found for {symbol}."
-        
-        f = data[0]
-        
+            return {
+                "symbol": sym,
+                "fundamentals": {},
+                "error": "No fundamentals found",
+                "result_text": f"No fundamentals found for {sym}.",
+            }
+
+        f = data[0] or {}
+
         # Supplement with Yahoo Finance for sector/industry/EPS (Robinhood doesn't always have these)
-        sector = f.get('sector', 'N/A')
-        industry = f.get('industry', 'N/A')
+        sector = f.get('sector') or 'N/A'
+        industry = f.get('industry') or 'N/A'
         eps = 'N/A'
         try:
             import yfinance as yf
-            yf_info = yf.Ticker(symbol.upper()).info
+            yf_info = yf.Ticker(sym).info
             if sector == 'N/A' or not sector:
                 sector = yf_info.get('sector', 'N/A')
             if industry == 'N/A' or not industry:
@@ -572,9 +626,14 @@ def get_fundamentals(symbol: str) -> str:
             eps = yf_info.get('trailingEps', 'N/A')
         except Exception:
             pass
-        
+
+        enriched = dict(f)
+        enriched.setdefault('sector', sector)
+        enriched.setdefault('industry', industry)
+        enriched.setdefault('eps', eps)
+
         lines = [
-            f"Symbol: {symbol.upper()}",
+            f"Symbol: {sym}",
             f"Sector: {sector}",
             f"Industry: {industry}",
             f"Market Cap: {f.get('market_cap')}",
@@ -591,9 +650,19 @@ def get_fundamentals(symbol: str) -> str:
             f"Low: {f.get('low')}",
             f"Description: {(f.get('description') or 'N/A')[:200]}",
         ]
-        return "\n".join(lines)
+
+        return {
+            "symbol": sym,
+            "fundamentals": enriched,
+            "result_text": "\n".join(lines),
+        }
     except Exception as e:
-        return f"Error fetching fundamentals: {str(e)}"
+        return {
+            "symbol": sym,
+            "fundamentals": {},
+            "error": str(e),
+            "result_text": f"Error fetching fundamentals: {str(e)}",
+        }
 
 @mcp.tool()
 def get_earnings_calendar(symbols: str) -> str:
@@ -644,45 +713,53 @@ def get_earnings_calendar(symbols: str) -> str:
     return "\n".join(results) if results else "No symbols provided."
 
 @mcp.tool()
-def get_market_sentiment() -> str:
-    """Get market sentiment (Fear & Greed Index and VIX)."""
-    output = []
-    
-    # Fear & Greed
+def get_market_sentiment() -> dict:
+    """Get market sentiment (Fear & Greed Index and VIX).
+
+    NOTE: Returns structured JSON for machine parsing, plus a `result_text` string.
+    """
     fg = get_fear_and_greed()
-    if "error" in fg:
-        output.append(f"Fear & Greed: Error ({fg['error']})")
-    else:
-        # Format timestamp if available
+    vix = get_vix()
+
+    # Human-readable formatting for backwards compatibility
+    output = []
+
+    if isinstance(fg, dict) and "error" not in fg:
         ts = fg.get('timestamp')
+        ts_str = "N/A"
         try:
-            # Timestamp might be ISO string
             if ts:
-                ts_str = ts.replace('T', ' ')[:19]
-            else:
-                ts_str = "N/A"
-        except:
+                ts_str = str(ts).replace('T', ' ')[:19]
+        except Exception:
             ts_str = str(ts)
-            
         output.append("--- Fear & Greed Index ---")
         output.append(f"Score: {fg.get('score', 0):.0f} ({fg.get('rating', 'Unknown')})")
         output.append(f"Previous: {fg.get('previous_close', 0):.0f}")
         output.append(f"Updated: {ts_str}")
+    else:
+        output.append(f"Fear & Greed: Error ({fg.get('error') if isinstance(fg, dict) else fg})")
 
     output.append("")
 
-    # VIX
-    vix = get_vix()
-    if "error" in vix:
-        output.append(f"VIX: Error ({vix['error']})")
-    else:
+    if isinstance(vix, dict) and "error" not in vix:
         output.append("--- VIX (Volatility Index) ---")
         output.append(f"Price: {vix.get('price')}")
         output.append(f"Change: {vix.get('change', 0):+.2f} ({vix.get('percent_change', 0):+.2f}%)")
         output.append(f"Day Range: {vix.get('day_low')} - {vix.get('day_high')}")
         output.append(f"52W Range: {vix.get('52_week_low')} - {vix.get('52_week_high')}")
+    else:
+        output.append(f"VIX: Error ({vix.get('error') if isinstance(vix, dict) else vix})")
 
-    return "\n".join(output)
+    regime = None
+    if isinstance(fg, dict) and 'rating' in fg:
+        regime = fg.get('rating')
+
+    return {
+        "fear_and_greed": fg,
+        "vix": vix,
+        "regime": regime,
+        "result_text": "\n".join(output),
+    }
 
 @mcp.tool()
 def get_macro_news_headlines(limit: int = 10, only_today: bool = False) -> str:
@@ -715,42 +792,59 @@ def get_timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 @mcp.tool()
-def get_market_session() -> str:
-    """Get current market session status (pre-market, regular, after-hours, closed), today's schedule, and next open/close times."""
+def get_market_session() -> dict:
+    """Get current market session status (pre-market, regular, after-hours, closed), today's schedule, and next open/close times.
+
+    NOTE: Returns structured JSON so agents can reliably parse `market_session_calendar`.
+    A human-readable `result_text` is included for compatibility.
+    """
     status = get_market_status()
+    hols = get_upcoming_holidays(3)
 
     lines = []
-    lines.append(f"Session: {status['session'].upper()}")
-    lines.append(f"Time: {status['timestamp']}")
-    lines.append(f"Trading Day: {'Yes' if status['is_trading_day'] else 'No'}")
+    lines.append(f"Session: {status.get('session','').upper()}")
+    lines.append(f"Time: {status.get('timestamp')}")
+    lines.append(f"Trading Day: {'Yes' if status.get('is_trading_day') else 'No'}")
 
-    if status['holiday']:
-        lines.append(f"Reason: {status['holiday']}")
+    if status.get('holiday'):
+        lines.append(f"Reason: {status.get('holiday')}")
 
-    if status['is_early_close']:
-        lines.append(f"Early Close: Yes")
+    if status.get('is_early_close'):
+        lines.append("Early Close: Yes")
 
-    if status['schedule']:
-        s = status['schedule']
-        lines.append(f"Pre-Market: {s['premarket_open']}")
-        lines.append(f"Open: {s['regular_open']}")
-        lines.append(f"Close: {s['regular_close']}")
-        lines.append(f"After-Hours: until {s['afterhours_close']}")
+    s = status.get('schedule') or {}
+    if s:
+        lines.append(f"Pre-Market: {s.get('premarket_open')}")
+        lines.append(f"Open: {s.get('regular_open')}")
+        lines.append(f"Close: {s.get('regular_close')}")
+        lines.append(f"After-Hours: until {s.get('afterhours_close')}")
 
-    if status['next_open']:
-        lines.append(f"Next Open: {status['next_open']}")
-    if status['next_close']:
-        lines.append(f"Next Close: {status['next_close']}")
+    if status.get('next_open'):
+        lines.append(f"Next Open: {status.get('next_open')}")
+    if status.get('next_close'):
+        lines.append(f"Next Close: {status.get('next_close')}")
 
-    # Add upcoming holidays
-    hols = get_upcoming_holidays(3)
     if hols:
         lines.append("")
         lines.append("Upcoming Holidays:")
         for h in hols:
-            lines.append(f"  {h['date']} ({h['day']})")
+            lines.append(f"  {h.get('date')} ({h.get('day')})")
 
-    return "\n".join(lines)
+    # This is the machine-parseable calendar payload
+    market_session_calendar = {
+        "timezone": "America/New_York",
+        "session_date": status.get('date'),
+        **status,
+        "upcoming_holidays": hols,
+    }
+
+    return {
+        "session": status.get('session'),
+        "is_trading_day": status.get('is_trading_day'),
+        "timestamp": status.get('timestamp'),
+        "market_session_calendar": market_session_calendar,
+        "result_text": "\n".join(lines),
+    }
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the Robinhood MCP server")

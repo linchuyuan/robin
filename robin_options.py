@@ -86,14 +86,14 @@ def get_option_chain(symbol: str, expiration_date: Optional[str] = None) -> Dict
         if opt.get('state') != 'active':
             continue
             
-        # Extract relevant data
+        # Extract relevant data (use `or 0` to guard against explicit None values)
         item = {
-            "strike": float(opt.get("strike_price", 0)),
-            "price": float(opt.get("adjusted_mark_price", 0)), # Mark price is usually the mid-point
-            "bid": float(opt.get("bid_price", 0)),
-            "ask": float(opt.get("ask_price", 0)),
-            "volume": int(opt.get("volume", 0)),
-            "open_interest": int(opt.get("open_interest", 0)),
+            "strike": float(opt.get("strike_price") or 0),
+            "price": float(opt.get("adjusted_mark_price") or 0),
+            "bid": float(opt.get("bid_price") or 0),
+            "ask": float(opt.get("ask_price") or 0),
+            "volume": int(opt.get("volume") or 0),
+            "open_interest": int(opt.get("open_interest") or 0),
             "implied_volatility": float(opt.get("implied_volatility") or 0),
             "delta": float(opt.get("delta") or 0),
             "gamma": float(opt.get("gamma") or 0),

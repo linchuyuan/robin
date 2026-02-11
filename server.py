@@ -15,6 +15,12 @@ from order_history import get_order_history, get_order_detail
 from robin_options import get_option_chain as fetch_option_chain
 from sentiment import get_fear_and_greed, get_vix
 from market_calendar import get_market_status, get_upcoming_holidays, get_early_closes
+from reddit_data import fetch_reddit_posts, fetch_reddit_post_comments
+from reddit_sentiment import (
+    get_reddit_symbol_mentions as build_reddit_symbol_mentions,
+    get_reddit_sentiment_snapshot as build_reddit_sentiment_snapshot,
+    get_reddit_trending_tickers as build_reddit_trending_tickers,
+)
 
 import robin_stocks.robinhood as rh
 
@@ -200,10 +206,10 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
         return f"Error placing order: {str(e)}"
 
 @mcp.tool()
-def get_option_chain(symbol: str, expiration_date: str = None, strikes: int = 5) -> str:
+def get_option_chain(symbol: str, expiration_date: str = None, strikes: int = 5) -> dict:
     """
     Fetch option chain data from Robinhood with Greeks.
-    
+
     Args:
         symbol: Stock ticker symbol
         expiration_date: Optional expiration date (YYYY-MM-DD). If omitted, lists available dates.
@@ -212,62 +218,77 @@ def get_option_chain(symbol: str, expiration_date: str = None, strikes: int = 5)
     try:
         get_session()
         data = fetch_option_chain(symbol, expiration_date)
-        
-        if "expirations" in data and "calls" not in data:
-            return f"Available expiration dates for {symbol}:\n" + "\n".join(data["expirations"])
-        
-        output = [f"Option Chain for {symbol} (Exp: {data['expiration_date']})"]
-        current_price = data.get("current_price", 0.0)
-        output.append(f"Current Price: {current_price}\n")
-        
-        def format_option(opt):
-            return (f"Strike: {opt['strike']} | Bid: {opt['bid']:.2f} | Ask: {opt['ask']:.2f} | "
-                    f"Mid: {opt['price']:.2f} | IV: {opt['implied_volatility']:.2f} | "
-                    f"Vol: {opt['volume']} | OI: {opt['open_interest']} | "
-                    f"Delta: {opt['delta']:.3f} | Gamma: {opt['gamma']:.3f} | "
-                    f"Theta: {opt['theta']:.3f} | Vega: {opt['vega']:.3f}")
 
-        output.append("CALLS:")
+        if "expirations" in data and "calls" not in data:
+            return {
+                "symbol": symbol.upper(),
+                "expirations": data.get("expirations", []),
+                "result_text": f"Available expiration dates for {symbol}:\n" + "\n".join(data.get("expirations", [])),
+            }
+
+        current_price = float(data.get("current_price", 0.0) or 0.0)
         calls = data.get("calls", [])
-        
-        calls_below = sorted(
-            [c for c in calls if float(c.get('strike', 0)) < current_price],
-            key=lambda x: float(x.get('strike', 0)),
-            reverse=True
-        )[:strikes]
-        
-        calls_above = sorted(
-            [c for c in calls if float(c.get('strike', 0)) >= current_price],
-            key=lambda x: float(x.get('strike', 0))
-        )[:strikes]
-        
-        selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get('strike', 0)))
-        
-        for c in selected_calls:
-            output.append(format_option(c))
-            
-        output.append("\nPUTS:")
         puts = data.get("puts", [])
-        
+
+        calls_below = sorted(
+            [c for c in calls if float(c.get("strike", 0) or 0) < current_price],
+            key=lambda x: float(x.get("strike", 0) or 0),
+            reverse=True,
+        )[:strikes]
+        calls_above = sorted(
+            [c for c in calls if float(c.get("strike", 0) or 0) >= current_price],
+            key=lambda x: float(x.get("strike", 0) or 0),
+        )[:strikes]
+        selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get("strike", 0) or 0))
+
         puts_below = sorted(
-            [p for p in puts if float(p.get('strike', 0)) < current_price],
-            key=lambda x: float(x.get('strike', 0)),
-            reverse=True
+            [p for p in puts if float(p.get("strike", 0) or 0) < current_price],
+            key=lambda x: float(x.get("strike", 0) or 0),
+            reverse=True,
         )[:strikes]
-        
         puts_above = sorted(
-            [p for p in puts if float(p.get('strike', 0)) >= current_price],
-            key=lambda x: float(x.get('strike', 0))
+            [p for p in puts if float(p.get("strike", 0) or 0) >= current_price],
+            key=lambda x: float(x.get("strike", 0) or 0),
         )[:strikes]
-        
-        selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get('strike', 0)))
-        
-        for p in selected_puts:
-            output.append(format_option(p))
-            
-        return "\n".join(output)
+        selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get("strike", 0) or 0))
+
+        def fmt_line(opt: dict) -> str:
+            return (
+                f"Strike: {opt.get('strike')} | Bid: {float(opt.get('bid', 0) or 0):.2f} | "
+                f"Ask: {float(opt.get('ask', 0) or 0):.2f} | Mid: {float(opt.get('price', 0) or 0):.2f} | "
+                f"IV: {float(opt.get('implied_volatility', 0) or 0):.2f} | Vol: {opt.get('volume')} | "
+                f"OI: {opt.get('open_interest')} | Delta: {float(opt.get('delta', 0) or 0):.3f} | "
+                f"Gamma: {float(opt.get('gamma', 0) or 0):.3f} | Theta: {float(opt.get('theta', 0) or 0):.3f} | "
+                f"Vega: {float(opt.get('vega', 0) or 0):.3f}"
+            )
+
+        lines = [
+            f"Option Chain for {symbol} (Exp: {data.get('expiration_date')})",
+            f"Current Price: {current_price}",
+            "",
+            "CALLS:",
+            *[fmt_line(c) for c in selected_calls],
+            "",
+            "PUTS:",
+            *[fmt_line(p) for p in selected_puts],
+        ]
+
+        return {
+            "symbol": symbol.upper(),
+            "expiration_date": data.get("expiration_date"),
+            "current_price": current_price,
+            "calls": selected_calls,
+            "puts": selected_puts,
+            "result_text": "\n".join(lines),
+        }
     except Exception as e:
-        return f"Error fetching options: {str(e)}"
+        return {
+            "symbol": symbol.upper(),
+            "error": str(e),
+            "calls": [],
+            "puts": [],
+            "result_text": f"Error fetching options: {str(e)}",
+        }
 
 @mcp.tool()
 def get_yf_stock_quote(symbol: str) -> dict:
@@ -348,10 +369,10 @@ def get_yf_stock_news(symbol: str) -> dict:
         }
 
 @mcp.tool()
-def get_yf_option_chain(symbol: str, expiration_date: str = None, strikes: int = 5) -> str:
+def get_yf_option_chain(symbol: str, expiration_date: str = None, strikes: int = 5) -> dict:
     """
     Fetch option chain data from Yahoo Finance.
-    
+
     Args:
         symbol: Stock ticker symbol
         expiration_date: Optional expiration date (YYYY-MM-DD). If omitted, lists available dates.
@@ -359,55 +380,73 @@ def get_yf_option_chain(symbol: str, expiration_date: str = None, strikes: int =
     """
     try:
         data = get_yf_options(symbol, expiration_date)
-        
-        if "expirations" in data and not "calls" in data:
-            return f"Available expiration dates for {symbol}:\n" + "\n".join(data["expirations"])
-        
-        output = [f"Option Chain for {symbol} (Exp: {data['expiration_date']})"]
-        current_price = data.get("current_price", 0.0)
-        output.append(f"Current Price: {current_price}\n")
-        
-        output.append("CALLS:")
+
+        if "expirations" in data and "calls" not in data:
+            return {
+                "symbol": symbol.upper(),
+                "expirations": data.get("expirations", []),
+                "result_text": f"Available expiration dates for {symbol}:\n" + "\n".join(data.get("expirations", [])),
+            }
+
+        current_price = float(data.get("current_price", 0.0) or 0.0)
         calls = data.get("calls", [])
-        
-        calls_below = sorted(
-            [c for c in calls if float(c.get('strike', 0)) < current_price],
-            key=lambda x: float(x.get('strike', 0)),
-            reverse=True
-        )[:strikes]
-        
-        calls_above = sorted(
-            [c for c in calls if float(c.get('strike', 0)) >= current_price],
-            key=lambda x: float(x.get('strike', 0))
-        )[:strikes]
-        
-        selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get('strike', 0)))
-        
-        for c in selected_calls:
-            output.append(f"Strike: {c.get('strike')} | Bid: {c.get('bid')} | Ask: {c.get('ask')} | Vol: {c.get('volume')}")
-            
-        output.append("\nPUTS:")
         puts = data.get("puts", [])
-        
+
+        calls_below = sorted(
+            [c for c in calls if float(c.get("strike", 0) or 0) < current_price],
+            key=lambda x: float(x.get("strike", 0) or 0),
+            reverse=True,
+        )[:strikes]
+        calls_above = sorted(
+            [c for c in calls if float(c.get("strike", 0) or 0) >= current_price],
+            key=lambda x: float(x.get("strike", 0) or 0),
+        )[:strikes]
+        selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get("strike", 0) or 0))
+
         puts_below = sorted(
-            [p for p in puts if float(p.get('strike', 0)) < current_price],
-            key=lambda x: float(x.get('strike', 0)),
-            reverse=True
+            [p for p in puts if float(p.get("strike", 0) or 0) < current_price],
+            key=lambda x: float(x.get("strike", 0) or 0),
+            reverse=True,
         )[:strikes]
-        
         puts_above = sorted(
-            [p for p in puts if float(p.get('strike', 0)) >= current_price],
-            key=lambda x: float(x.get('strike', 0))
+            [p for p in puts if float(p.get("strike", 0) or 0) >= current_price],
+            key=lambda x: float(x.get("strike", 0) or 0),
         )[:strikes]
-        
-        selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get('strike', 0)))
-        
-        for p in selected_puts:
-            output.append(f"Strike: {p.get('strike')} | Bid: {p.get('bid')} | Ask: {p.get('ask')} | Vol: {p.get('volume')}")
-            
-        return "\n".join(output)
+        selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get("strike", 0) or 0))
+
+        lines = [
+            f"Option Chain for {symbol} (Exp: {data.get('expiration_date')})",
+            f"Current Price: {current_price}",
+            "",
+            "CALLS:",
+            *[
+                f"Strike: {c.get('strike')} | Bid: {c.get('bid')} | Ask: {c.get('ask')} | Vol: {c.get('volume')}"
+                for c in selected_calls
+            ],
+            "",
+            "PUTS:",
+            *[
+                f"Strike: {p.get('strike')} | Bid: {p.get('bid')} | Ask: {p.get('ask')} | Vol: {p.get('volume')}"
+                for p in selected_puts
+            ],
+        ]
+
+        return {
+            "symbol": symbol.upper(),
+            "expiration_date": data.get("expiration_date"),
+            "current_price": current_price,
+            "calls": selected_calls,
+            "puts": selected_puts,
+            "result_text": "\n".join(lines),
+        }
     except Exception as e:
-        return f"Error fetching options: {str(e)}"
+        return {
+            "symbol": symbol.upper(),
+            "error": str(e),
+            "calls": [],
+            "puts": [],
+            "result_text": f"Error fetching options: {str(e)}",
+        }
 
 @mcp.tool()
 def get_account_info() -> str:
@@ -785,6 +824,175 @@ def get_macro_news_headlines(limit: int = 10, only_today: bool = False) -> str:
         output.append(f"  Link: {item['link']}")
         
     return "\n".join(output)
+
+@mcp.tool()
+def get_reddit_posts(
+    query: str,
+    subreddits: str = "wallstreetbets,stocks,investing,SecurityAnalysis",
+    sort: str = "new",
+    time_filter: str = "day",
+    limit: int = 50,
+) -> dict:
+    """Fetch recent Reddit posts for a query across one or more subreddits.
+
+    NOTE: Requires app credentials in env vars:
+    REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USER_AGENT
+    """
+    try:
+        payload = fetch_reddit_posts(
+            query=query,
+            subreddits=subreddits,
+            sort=sort,
+            time_filter=time_filter,
+            limit=limit,
+        )
+        posts = payload.get("posts", [])
+        lines = [f"Fetched {len(posts)} Reddit posts for query: {query}"]
+        for p in posts[:5]:
+            lines.append(
+                f"- [{p.get('subreddit')}] {p.get('title')} "
+                f"(score={p.get('score')}, comments={p.get('num_comments')})"
+            )
+        payload["result_text"] = "\n".join(lines)
+        return payload
+    except Exception as e:
+        return {
+            "posts": [],
+            "meta": {
+                "query": query,
+                "subreddits": [s.strip() for s in str(subreddits).split(",") if s.strip()],
+                "sort": sort,
+                "time_filter": time_filter,
+                "limit": limit,
+            },
+            "error": str(e),
+            "result_text": f"Error fetching Reddit posts: {str(e)}",
+        }
+
+@mcp.tool()
+def get_reddit_post_comments(post_id: str, sort: str = "top", limit: int = 100) -> dict:
+    """Fetch comments for a Reddit post by post id."""
+    try:
+        payload = fetch_reddit_post_comments(post_id=post_id, sort=sort, limit=limit)
+        comments = payload.get("comments", [])
+        lines = [f"Fetched {len(comments)} comments for post {post_id}."]
+        for c in comments[:5]:
+            lines.append(f"- score={c.get('score')}: {(c.get('body') or '')[:120]}")
+        payload["result_text"] = "\n".join(lines)
+        return payload
+    except Exception as e:
+        return {
+            "comments": [],
+            "meta": {"post_id": post_id, "sort": sort, "limit": limit},
+            "error": str(e),
+            "result_text": f"Error fetching Reddit comments: {str(e)}",
+        }
+
+@mcp.tool()
+def get_reddit_symbol_mentions(
+    symbols: str,
+    subreddits: str = "wallstreetbets,stocks,investing",
+    lookback_hours: int = 24,
+    include_comments: bool = True,
+    limit_posts: int = 100,
+) -> dict:
+    """Extract ticker mention counts and context from Reddit posts/comments."""
+    try:
+        return build_reddit_symbol_mentions(
+            symbols=symbols,
+            subreddits=subreddits,
+            lookback_hours=lookback_hours,
+            include_comments=include_comments,
+            limit_posts=limit_posts,
+        )
+    except Exception as e:
+        return {
+            "window": {},
+            "symbols": [],
+            "data_quality": {},
+            "error": str(e),
+            "result_text": f"Error computing Reddit symbol mentions: {str(e)}",
+        }
+
+@mcp.tool()
+def get_reddit_sentiment_snapshot(
+    symbols: str,
+    subreddits: str = "wallstreetbets,stocks,investing,SecurityAnalysis",
+    lookback_hours: int = 24,
+    baseline_days: int = 30,
+    limit_posts: int = 200,
+) -> dict:
+    """Compute a normalized Reddit sentiment factor per symbol."""
+    try:
+        return build_reddit_sentiment_snapshot(
+            symbols=symbols,
+            subreddits=subreddits,
+            lookback_hours=lookback_hours,
+            baseline_days=baseline_days,
+            limit_posts=limit_posts,
+        )
+    except Exception as e:
+        return {
+            "window": {},
+            "symbols": [],
+            "method": "reddit_v1",
+            "error": str(e),
+            "result_text": f"Error computing Reddit sentiment snapshot: {str(e)}",
+        }
+
+@mcp.tool()
+def get_reddit_ticker_sentiment(
+    tickers: str,
+    subreddits: str = "wallstreetbets,stocks,investing,SecurityAnalysis",
+    lookback_hours: int = 24,
+    baseline_days: int = 30,
+    limit_posts: int = 200,
+) -> dict:
+    """Compute Reddit sentiment for a manual comma-separated ticker list.
+
+    Args:
+        tickers: Comma-separated symbols (e.g. "AAPL,TSLA,NVDA")
+    """
+    try:
+        return build_reddit_sentiment_snapshot(
+            symbols=tickers,
+            subreddits=subreddits,
+            lookback_hours=lookback_hours,
+            baseline_days=baseline_days,
+            limit_posts=limit_posts,
+        )
+    except Exception as e:
+        return {
+            "window": {},
+            "symbols": [],
+            "method": "reddit_v1",
+            "error": str(e),
+            "result_text": f"Error computing Reddit ticker sentiment: {str(e)}",
+        }
+
+@mcp.tool()
+def get_reddit_trending_tickers(
+    subreddits: str = "wallstreetbets,stocks,investing",
+    lookback_hours: int = 24,
+    min_mentions: int = 15,
+    limit: int = 20,
+) -> dict:
+    """Find fast-rising ticker mentions on Reddit."""
+    try:
+        return build_reddit_trending_tickers(
+            subreddits=subreddits,
+            lookback_hours=lookback_hours,
+            min_mentions=min_mentions,
+            limit=limit,
+        )
+    except Exception as e:
+        return {
+            "window": {},
+            "trending": [],
+            "data_quality": {},
+            "error": str(e),
+            "result_text": f"Error computing Reddit trending tickers: {str(e)}",
+        }
 
 @mcp.tool()
 def get_timestamp() -> str:

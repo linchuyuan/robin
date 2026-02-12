@@ -42,6 +42,15 @@ def get_implied_volatility(symbol: str) -> float | None:
     except:
         return None
 
+def get_option_expirations(symbol: str) -> List[str]:
+    """Return available Robinhood option expiration dates for a symbol."""
+    symbol = symbol.upper()
+    expirations_data = rh.get_chains(symbol)
+    if not expirations_data or 'expiration_dates' not in expirations_data:
+        return []
+    return list(expirations_data.get('expiration_dates') or [])
+
+
 def get_option_chain(symbol: str, expiration_date: Optional[str] = None) -> Dict[str, Any]:
     """
     Fetch options chain for a symbol from Robinhood, including Greeks.
@@ -53,11 +62,9 @@ def get_option_chain(symbol: str, expiration_date: Optional[str] = None) -> Dict
     symbol = symbol.upper()
     
     # 1. Get all expiration dates
-    expirations_data = rh.get_chains(symbol)
-    if not expirations_data or 'expiration_dates' not in expirations_data:
+    all_expirations = get_option_expirations(symbol)
+    if not all_expirations:
         return {"expirations": []}
-        
-    all_expirations = expirations_data['expiration_dates']
     
     # If no date provided, return list of dates (or default to nearest?)
     # The CLI/MCP pattern usually lists dates if none provided.

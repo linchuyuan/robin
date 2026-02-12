@@ -12,7 +12,10 @@ from yahoo_finance import get_yf_quote, get_yf_news, get_yf_options
 from account import get_account_profile
 from crypto import get_crypto_quote, get_crypto_positions, place_crypto_order
 from order_history import get_order_history, get_order_detail
-from robin_options import get_option_chain as fetch_option_chain
+from robin_options import (
+    get_option_chain as fetch_option_chain,
+    get_option_expirations as fetch_option_expirations,
+)
 from sentiment import get_fear_and_greed, get_vix
 from market_calendar import get_market_status, get_upcoming_holidays, get_early_closes
 from reddit_data import fetch_reddit_posts, fetch_reddit_post_comments
@@ -204,6 +207,39 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
         return f"Order submitted: {result.get('id')}\nDetails: {result}"
     except Exception as e:
         return f"Error placing order: {str(e)}"
+
+@mcp.tool()
+def get_option_expirations(symbol: str) -> dict:
+    """
+    Fetch available option expiration dates for a symbol.
+
+    Args:
+        symbol: Stock ticker symbol
+    """
+    try:
+        get_session()
+        expirations = fetch_option_expirations(symbol)
+        if not expirations:
+            return {
+                "symbol": symbol.upper(),
+                "expirations": [],
+                "result_text": f"No expiration dates found for {symbol.upper()}.",
+            }
+
+        return {
+            "symbol": symbol.upper(),
+            "expirations": expirations,
+            "nearest_expiration": expirations[0],
+            "result_text": f"Available expiration dates for {symbol.upper()}:\n" + "\n".join(expirations),
+        }
+    except Exception as e:
+        return {
+            "symbol": symbol.upper(),
+            "expirations": [],
+            "error": str(e),
+            "result_text": f"Error fetching expiration dates: {str(e)}",
+        }
+
 
 @mcp.tool()
 def get_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> dict:

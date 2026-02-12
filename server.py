@@ -73,32 +73,51 @@ def cancel_order(order_id: str) -> str:
         return f"Error cancelling order: {str(e)}"
 
 @mcp.tool()
-def get_portfolio() -> str:
-    """Get the current user's open stock positions with detailed P/L."""
+def get_portfolio() -> dict:
+    """Get the current user's open stock positions with detailed P/L.
+
+    Returns structured JSON for reliable downstream parsing, plus `result_text` for readability.
+    """
     try:
         get_session()
-        positions = list_positions()
+        positions = list_positions() or []
         if not positions:
-            return "No open positions found."
-        
-        result = []
+            return {
+                "positions": [],
+                "count": 0,
+                "result_text": "No open positions found.",
+            }
+
+        lines = []
+        normalized = []
         for pos in positions:
-            # Format: SYMBOL: Qty @ AvgCost | Equity: $X | Day P/L: $X (X%) | Total P/L: $X (X%)
             day_pl = f"{pos['intraday_profit_loss']:+.2f} ({pos['intraday_percent_change']:+.2f}%)"
             total_pl = f"{pos['equity_change']:+.2f} ({pos['percent_change']:+.2f}%)"
-            
-            line = (f"{pos['symbol']}: {pos['quantity']} shares @ ${pos['average_buy_price']:.2f} | "
-                    f"Equity: ${pos['equity']:.2f} | "
-                    f"Day P/L: {day_pl} | "
-                    f"Total P/L: {total_pl} | "
-                    f"P/E: {pos.get('pe_ratio', 'N/A')} | "
-                    f"Mkt Cap: {pos.get('market_cap', 'N/A')} | "
-                    f"52W High: {pos.get('high_52_weeks', 'N/A')} | "
-                    f"52W Low: {pos.get('low_52_weeks', 'N/A')}")
-            result.append(line)
-        return "\n".join(result)
+            line = (
+                f"{pos['symbol']}: {pos['quantity']} shares @ ${pos['average_buy_price']:.2f} | "
+                f"Equity: ${pos['equity']:.2f} | "
+                f"Day P/L: {day_pl} | "
+                f"Total P/L: {total_pl} | "
+                f"P/E: {pos.get('pe_ratio', 'N/A')} | "
+                f"Mkt Cap: {pos.get('market_cap', 'N/A')} | "
+                f"52W High: {pos.get('high_52_weeks', 'N/A')} | "
+                f"52W Low: {pos.get('low_52_weeks', 'N/A')}"
+            )
+            lines.append(line)
+            normalized.append(pos)
+
+        return {
+            "positions": normalized,
+            "count": len(normalized),
+            "result_text": "\n".join(lines),
+        }
     except Exception as e:
-        return f"Error fetching portfolio: {str(e)}"
+        return {
+            "positions": [],
+            "count": 0,
+            "error": str(e),
+            "result_text": f"Error fetching portfolio: {str(e)}",
+        }
 
 @mcp.tool()
 def get_stock_news(symbol: str) -> dict:

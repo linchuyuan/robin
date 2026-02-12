@@ -5,3 +5,4 @@ robin_stocks>=0.1.0
 fastmcp>=0.1.0
 yfinance>=0.2.0
 pandas_market_calendars>=5.0
+praw>=7.7.0

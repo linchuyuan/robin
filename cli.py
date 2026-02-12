@@ -599,5 +599,6 @@ def market_status(holidays: bool, early: bool) -> None:
     if status['next_close']:
         click.echo(f"Next Close:   {status['next_close']}")
 
+
 if __name__ == "__main__":
     cli()

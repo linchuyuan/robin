@@ -24,6 +24,10 @@ A lightweight Python CLI for placing orders on Robinhood with a safety-first wor
    export ROBINHOOD_USERNAME="alice@example.com"
    export ROBINHOOD_PASSWORD="supersecret"
    export ROBINHOOD_MFA="123456"
+   # Optional for Reddit tools: if omitted, CLI/MCP will use public Reddit JSON mode
+   export REDDIT_CLIENT_ID="your_reddit_app_client_id"
+   export REDDIT_CLIENT_SECRET="your_reddit_app_client_secret"
+   export REDDIT_USER_AGENT="robin-mcp/1.0 by <reddit_username>"
    ```
 2. The CLI reads these values via `python-dotenv` (if a `.env` is present) and falls back to environment variables. If either the username or password is missing, the CLI will prompt you interactively.
 3. A cached session token (with TTL) is stored at `~/.robinhood-cli/session.json`. Delete it or run `python cli.py logout` to purge credentials.
@@ -120,6 +124,12 @@ This project includes a Model Context Protocol (MCP) server, allowing AI agents 
 - `get_market_sentiment`: Get Fear & Greed Index and VIX.
 - `get_macro_news_headlines`: Get aggregated latest macroeconomic news. Supports `limit` and `only_today`.
 - `get_market_session`: Get current market session status (pre-market/regular/after-hours/closed), schedule, holidays, and next open/close.
+- `get_reddit_posts`: Query recent Reddit posts across selected subreddits.
+- `get_reddit_post_comments`: Fetch comments for a specific Reddit post.
+- `get_reddit_symbol_mentions`: Count ticker mentions and context in Reddit posts/comments.
+- `get_reddit_sentiment_snapshot`: Compute normalized Reddit sentiment factors per symbol.
+- `get_reddit_ticker_sentiment`: Compute Reddit sentiment for a manual comma-separated ticker list.
+- `get_reddit_trending_tickers`: Discover fast-rising ticker mentions on Reddit.
 - `get_timestamp`: Get current server timestamp.
 - `get_crypto_holdings`: Get crypto positions.
 - `execute_crypto_order`: Place crypto orders.

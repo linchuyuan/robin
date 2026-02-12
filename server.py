@@ -206,25 +206,27 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
         return f"Error placing order: {str(e)}"
 
 @mcp.tool()
-def get_option_chain(symbol: str, expiration_date: str = None, strikes: int = 5) -> dict:
+def get_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> dict:
     """
     Fetch option chain data from Robinhood with Greeks.
 
     Args:
         symbol: Stock ticker symbol
-        expiration_date: Optional expiration date (YYYY-MM-DD). If omitted, lists available dates.
+        expiration_date: Required expiration date (YYYY-MM-DD).
         strikes: Number of strikes above/below current price to show (default: 5).
     """
     try:
-        get_session()
-        data = fetch_option_chain(symbol, expiration_date)
-
-        if "expirations" in data and "calls" not in data:
+        if not expiration_date:
             return {
                 "symbol": symbol.upper(),
-                "expirations": data.get("expirations", []),
-                "result_text": f"Available expiration dates for {symbol}:\n" + "\n".join(data.get("expirations", [])),
+                "error": "expiration_date is required (YYYY-MM-DD)",
+                "calls": [],
+                "puts": [],
+                "result_text": "Error: expiration_date is required (YYYY-MM-DD).",
             }
+
+        get_session()
+        data = fetch_option_chain(symbol, expiration_date)
 
         current_price = float(data.get("current_price", 0.0) or 0.0)
         calls = data.get("calls", [])
@@ -369,24 +371,26 @@ def get_yf_stock_news(symbol: str) -> dict:
         }
 
 @mcp.tool()
-def get_yf_option_chain(symbol: str, expiration_date: str = None, strikes: int = 5) -> dict:
+def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> dict:
     """
     Fetch option chain data from Yahoo Finance.
 
     Args:
         symbol: Stock ticker symbol
-        expiration_date: Optional expiration date (YYYY-MM-DD). If omitted, lists available dates.
+        expiration_date: Required expiration date (YYYY-MM-DD).
         strikes: Number of strikes above/below current price to show (default: 5).
     """
     try:
-        data = get_yf_options(symbol, expiration_date)
-
-        if "expirations" in data and "calls" not in data:
+        if not expiration_date:
             return {
                 "symbol": symbol.upper(),
-                "expirations": data.get("expirations", []),
-                "result_text": f"Available expiration dates for {symbol}:\n" + "\n".join(data.get("expirations", [])),
+                "error": "expiration_date is required (YYYY-MM-DD)",
+                "calls": [],
+                "puts": [],
+                "result_text": "Error: expiration_date is required (YYYY-MM-DD).",
             }
+
+        data = get_yf_options(symbol, expiration_date)
 
         current_price = float(data.get("current_price", 0.0) or 0.0)
         calls = data.get("calls", [])

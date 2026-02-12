@@ -53,8 +53,8 @@ A lightweight Python CLI for placing orders on Robinhood with a safety-first wor
 | `python cli.py crypto-order SYMBOL --qty 0.1 --side buy` | Place a crypto order. |
 | `python cli.py yf-quote SYMBOL` | Fetch real-time quote via Yahoo Finance. |
 | `python cli.py yf-news SYMBOL` | Fetch latest news via Yahoo Finance. |
-| `python cli.py options SYMBOL` | Fetch option chain data from Robinhood (with Greeks). Use `--expiration` for specific dates and `--strikes` (default: 5) to control depth. |
-| `python cli.py yf-options SYMBOL` | View option chains via Yahoo Finance. Use `--expiration` for specific dates and `--strikes` (default: 5) to control depth. |
+| `python cli.py options SYMBOL` | Fetch option chain data from Robinhood (with Greeks). Use `--expiration` (required) and `--strikes` (default: 5) to control depth. |
+| `python cli.py yf-options SYMBOL` | View option chains via Yahoo Finance. Use `--expiration` (required) and `--strikes` (default: 5) to control depth. |
 | `python cli.py fundamentals SYMBOL` | Fetch key fundamental stats (P/E, Market Cap, 52-week range, Volume, Sector, etc.). |
 | `python cli.py sentiment` | Get market sentiment (Fear & Greed Index, VIX). |
 | `python cli.py macro` | Get aggregated latest macroeconomic news from Investing.com, Bloomberg, and CNBC. Supports `--limit` (default: 10) and `--today`. |
@@ -117,8 +117,9 @@ This project includes a Model Context Protocol (MCP) server, allowing AI agents 
 - `get_stock_news` / `get_yf_stock_news`: Get latest news.
 - `get_stock_history`: Get historical price data.
 - `get_yf_stock_quote`: Get real-time quote (Yahoo).
-- `get_option_chain`: Get option chain with Greeks (Robinhood). Supports `strikes` parameter.
-- `get_yf_option_chain`: Get option chain (Yahoo). Supports `strikes` parameter.
+- `get_option_expirations`: Get available option expiration dates for a symbol (plus nearest expiration) before requesting chain data.
+- `get_option_chain`: Get option chain with Greeks (Robinhood). Requires `expiration_date`; supports `strikes` parameter.
+- `get_yf_option_chain`: Get option chain (Yahoo). Requires `expiration_date`; supports `strikes` parameter.
 - `get_crypto_price`: Get crypto quote.
 - `get_fundamentals`: Get P/E, Market Cap, and other stats (Robinhood).
 - `get_market_sentiment`: Get Fear & Greed Index and VIX.

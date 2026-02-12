@@ -763,52 +763,97 @@ def get_fundamentals(symbol: str) -> dict:
         }
 
 @mcp.tool()
-def get_earnings_calendar(symbols: str) -> str:
+def get_earnings_calendar(symbols: str) -> dict:
     """Get upcoming earnings dates for one or more symbols.
-    
+
+    Returns structured JSON for reliable downstream parsing, plus `result_text`.
+
     Args:
         symbols: Comma-separated tickers (e.g. "AAPL,MSFT,GOOGL")
     """
     import yfinance as yf
-    results = []
-    for sym in symbols.split(","):
-        sym = sym.strip().upper()
-        if not sym:
-            continue
+    from datetime import datetime as dt, timezone
+
+    symbol_list = [s.strip().upper() for s in (symbols or "").split(",") if s.strip()]
+    rows = []
+
+    def fmt_date(value):
+        try:
+            if value is None:
+                return None
+            if isinstance(value, (int, float)):
+                return dt.fromtimestamp(value, tz=timezone.utc).strftime('%Y-%m-%d')
+            # pandas Timestamp / datetime-like
+            if hasattr(value, 'strftime'):
+                return value.strftime('%Y-%m-%d')
+            s = str(value).strip()
+            if not s:
+                return None
+            # handle strings like '2026-02-25 00:00:00'
+            return s[:10]
+        except Exception:
+            return None
+
+    for sym in symbol_list:
+        date_str = None
+        error = None
         try:
             ticker = yf.Ticker(sym)
-            info = ticker.info
-            # Try multiple fields where earnings date might live
+            info = ticker.info or {}
+
             earnings_ts = info.get("earningsTimestamp")
             earnings_dates = info.get("earningsDate")
-            
+
             if earnings_ts:
-                from datetime import datetime as dt, timezone
-                earnings_dt = dt.fromtimestamp(earnings_ts, tz=timezone.utc)
-                results.append(f"{sym}: {earnings_dt.strftime('%Y-%m-%d')}")
+                date_str = fmt_date(earnings_ts)
             elif earnings_dates:
                 if isinstance(earnings_dates, (list, tuple)) and len(earnings_dates) > 0:
-                    from datetime import datetime as dt, timezone
-                    earnings_dt = dt.fromtimestamp(earnings_dates[0], tz=timezone.utc)
-                    results.append(f"{sym}: {earnings_dt.strftime('%Y-%m-%d')}")
+                    date_str = fmt_date(earnings_dates[0])
                 else:
-                    results.append(f"{sym}: {earnings_dates}")
+                    date_str = fmt_date(earnings_dates)
             else:
-                # Fallback: try the calendar property
+                # Fallback: calendar
                 try:
                     cal = ticker.calendar
                     if cal is not None and hasattr(cal, 'empty') and not cal.empty:
-                        results.append(f"{sym}: {cal.to_string()}")
+                        # pandas DataFrame: common row/index names vary by yf versions
+                        if hasattr(cal, 'index'):
+                            idx = [str(i) for i in list(cal.index)]
+                            target = next((i for i in idx if 'earnings' in i.lower()), None)
+                            if target is not None:
+                                val = cal.loc[target].iloc[0] if hasattr(cal.loc[target], 'iloc') else cal.loc[target]
+                                date_str = fmt_date(val)
                     elif isinstance(cal, dict) and cal:
-                        earnings = cal.get('Earnings Date', 'Unknown')
-                        results.append(f"{sym}: {earnings}")
-                    else:
-                        results.append(f"{sym}: No earnings date found")
+                        date_str = fmt_date(cal.get('Earnings Date') or cal.get('earningsDate'))
                 except Exception:
-                    results.append(f"{sym}: No earnings date found")
+                    pass
+
+            if not date_str:
+                error = "No earnings date found"
         except Exception as e:
-            results.append(f"{sym}: Error ({str(e)[:80]})")
-    return "\n".join(results) if results else "No symbols provided."
+            error = str(e)[:120]
+
+        rows.append({
+            "symbol": sym,
+            "date": date_str,
+            "error": error,
+        })
+
+    lines = []
+    for r in rows:
+        if r.get("date"):
+            lines.append(f"{r['symbol']}: {r['date']}")
+        elif r.get("error"):
+            lines.append(f"{r['symbol']}: Error ({r['error']})")
+        else:
+            lines.append(f"{r['symbol']}: No earnings date found")
+
+    return {
+        "symbols": symbol_list,
+        "rows": rows,
+        "result": "\n".join(lines),
+        "result_text": "\n".join(lines),
+    }
 
 @mcp.tool()
 def get_market_sentiment() -> dict:

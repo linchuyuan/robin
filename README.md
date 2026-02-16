@@ -71,6 +71,15 @@ This project includes a Model Context Protocol (MCP) server, allowing AI agents 
 - **Trading:** Place market/limit orders and cancel pending orders.
 - **Market Data:** Fetch quotes, news, history, and option chains (via Yahoo Finance).
 
+### Response format (LLM-friendly)
+All MCP tools return **JSON** (not plain text). Each response includes:
+- **Structured data** (e.g. `positions`, `orders`, `quote`, `profile`) for parsing and reasoning.
+- **`result_text`**: a short human-readable summary for the model to cite or summarize.
+- **`error`**: set when the call failed, with a descriptive message.
+- For mutating tools (for example `execute_order`, `execute_crypto_order`, `cancel_order`), a **`success`** boolean is included.
+
+This keeps outputs consistent and easy for agents to consume (e.g. via `mcporter call … --output json`).
+
 ### Usage
 1. Configure your MCP client (e.g., Claude Desktop, MCPorter) to point to the server.
 
@@ -88,13 +97,13 @@ This project includes a Model Context Protocol (MCP) server, allowing AI agents 
    ```
    *Note: I have created a sample `mcp_config.json` in the root of this project that you can copy from. Update the path to match your actual location.*
 
-   **SSE Transport:**
-   If running the server manually (`.\start_mcp.bat`), it defaults to SSE at `http://127.0.0.1:8000/sse`.
+   **HTTP Transport (recommended):**
+   If running the server manually (`.\start_mcp.bat`), it defaults to streamable HTTP at `http://127.0.0.1:8000/messages`.
    ```json
    {
      "mcpServers": {
        "robinhood": {
-         "url": "http://127.0.0.1:8000/sse"
+         "url": "http://127.0.0.1:8000/messages"
        }
      }
    }
@@ -104,7 +113,7 @@ This project includes a Model Context Protocol (MCP) server, allowing AI agents 
    ```powershell
    .\start_mcp.bat
    ```
-   (Only needed if using SSE transport or manual testing)
+   (Only needed if using HTTP transport or manual testing)
 
 ### Tools Available
 - `get_portfolio`: List open positions with detailed P/L metrics.
@@ -125,6 +134,7 @@ This project includes a Model Context Protocol (MCP) server, allowing AI agents 
 - `get_market_sentiment`: Get Fear & Greed Index and VIX.
 - `get_macro_news_headlines`: Get aggregated latest macroeconomic news. Supports `limit` and `only_today`.
 - `get_market_session`: Get current market session status (pre-market/regular/after-hours/closed), schedule, holidays, and next open/close.
+- `get_earnings_calendar`: Get upcoming earnings dates for one or more symbols (comma-separated).
 - `get_reddit_posts`: Query recent Reddit posts across selected subreddits.
 - `get_reddit_post_comments`: Fetch comments for a specific Reddit post.
 - `get_reddit_symbol_mentions`: Count ticker mentions and context in Reddit posts/comments.

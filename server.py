@@ -1,6 +1,6 @@
 """MCP Server for Robinhood Skills."""
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastmcp import FastMCP
 from auth import get_session
@@ -30,16 +30,83 @@ import robin_stocks.robinhood as rh
 # Create an MCP server
 mcp = FastMCP("Robinhood")
 
+
+def _extract_api_error(payload) -> str | None:
+    """Best-effort extraction of Robinhood error messages from dict/list responses."""
+    if payload is None:
+        return None
+
+    if isinstance(payload, dict):
+        for key in ("error", "detail", "message"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+        for key in ("errors", "non_field_errors"):
+            value = payload.get(key)
+            if value:
+                if isinstance(value, list):
+                    return "; ".join(str(v) for v in value)
+                return str(value)
+        return None
+
+    if isinstance(payload, list):
+        for item in payload:
+            nested = _extract_api_error(item)
+            if nested:
+                return nested
+        return None
+
+    return None
+
+
+def _validate_order_response(payload) -> tuple[bool, str | None]:
+    """Validate stock/crypto order submission responses."""
+    api_error = _extract_api_error(payload)
+    if api_error:
+        return False, api_error
+    if not isinstance(payload, dict):
+        return False, f"Unexpected order response type: {type(payload).__name__}"
+    if not payload.get("id"):
+        return False, "Order was not accepted: missing order id in response."
+    return True, None
+
+
+def _validate_cancel_response(payload) -> tuple[bool, str | None]:
+    """Validate cancel response from Robinhood."""
+    api_error = _extract_api_error(payload)
+    if api_error:
+        return False, api_error
+
+    if isinstance(payload, dict):
+        state = str(payload.get("state") or "").lower()
+        if state in {"cancelled", "canceled", "cancel_queued", "voided"}:
+            return True, None
+        if payload.get("id"):
+            # Some responses are still queued but accepted.
+            return True, None
+        return False, "Cancellation was not accepted: missing order id/state in response."
+
+    if payload is True:
+        return True, None
+
+    if isinstance(payload, str):
+        text = payload.strip().lower()
+        if "cancel" in text and "error" not in text:
+            return True, None
+
+    return False, "Cancellation failed or returned an empty/unknown response."
+
 @mcp.tool()
-def get_pending_orders() -> str:
-    """List all pending stock orders."""
+def get_pending_orders() -> dict:
+    """List all pending stock orders. Returns JSON with orders array and result_text for LLM."""
     try:
         get_session()
         orders = rh.get_all_open_stock_orders()
         if not orders:
-            return "No pending orders found."
-        
-        result = []
+            return {"orders": [], "count": 0, "result_text": "No pending orders found."}
+
+        result_lines = []
+        normalized = []
         for order in orders:
             symbol = order.get('symbol')
             if not symbol:
@@ -51,26 +118,60 @@ def get_pending_orders() -> str:
             state = order.get('state', 'unknown')
             trigger = order.get('trigger', 'immediate')
             stop_price = order.get('stop_price')
-            # Build trigger info string for stop orders
             trigger_str = ""
             if trigger == 'stop' and stop_price:
                 trigger_str = f" | trigger: stop @ {stop_price}"
             elif trigger != 'immediate':
                 trigger_str = f" | trigger: {trigger}"
-            result.append(f"ID: {order['id']} | {order.get('side')} {order.get('quantity')} {symbol} @ {price_str} | type: {order.get('type', 'N/A')}{trigger_str} | state: {state}")
-        return "\n".join(result)
+            line = f"ID: {order['id']} | {order.get('side')} {order.get('quantity')} {symbol} @ {price_str} | type: {order.get('type', 'N/A')}{trigger_str} | state: {state}"
+            result_lines.append(line)
+            normalized.append({
+                "id": order.get("id"),
+                "symbol": symbol,
+                "side": order.get("side"),
+                "quantity": order.get("quantity"),
+                "price": order.get("price"),
+                "type": order.get("type"),
+                "state": state,
+                "trigger": trigger,
+                "stop_price": stop_price,
+            })
+        return {
+            "orders": normalized,
+            "count": len(normalized),
+            "result_text": "\n".join(result_lines),
+        }
     except Exception as e:
-        return f"Error fetching orders: {str(e)}"
+        return {"orders": [], "count": 0, "error": str(e), "result_text": f"Error fetching orders: {str(e)}"}
 
 @mcp.tool()
-def cancel_order(order_id: str) -> str:
-    """Cancel a specific order by ID."""
+def cancel_order(order_id: str) -> dict:
+    """Cancel a specific order by ID. Returns JSON with success and result_text."""
     try:
         get_session()
-        rh.cancel_stock_order(order_id)
-        return f"Cancellation requested for order {order_id}"
+        response = rh.cancel_stock_order(order_id)
+        success, api_error = _validate_cancel_response(response)
+        if not success:
+            return {
+                "success": False,
+                "order_id": order_id,
+                "details": response,
+                "error": api_error,
+                "result_text": f"Error cancelling order: {api_error}",
+            }
+        return {
+            "success": True,
+            "order_id": order_id,
+            "details": response,
+            "result_text": f"Cancellation requested for order {order_id}",
+        }
     except Exception as e:
-        return f"Error cancelling order: {str(e)}"
+        return {
+            "success": False,
+            "order_id": order_id,
+            "error": str(e),
+            "result_text": f"Error cancelling order: {str(e)}",
+        }
 
 @mcp.tool()
 def get_portfolio() -> dict:
@@ -205,8 +306,8 @@ def get_stock_history(symbol: str, span: str = "week", interval: str = "day") ->
 @mcp.tool()
 def execute_order(symbol: str, qty: float, side: str, order_type: str = "market",
                   price: float = None, stop_price: float = None,
-                  time_in_force: str = "gfd", extended_hours: bool = False) -> str:
-    """Place a stock order on Robinhood.
+                  time_in_force: str = "gfd", extended_hours: bool = False) -> dict:
+    """Place a stock order on Robinhood. Returns JSON with order_id and result_text for LLM.
     
     Args:
         symbol: Stock ticker to trade (e.g. AAPL)
@@ -223,9 +324,37 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
         result = place_order(symbol.upper(), qty, side, order_type, price,
                              stop_price=stop_price, time_in_force=time_in_force,
                              extended_hours=extended_hours)
-        return f"Order submitted: {result.get('id')}\nDetails: {result}"
+        success, api_error = _validate_order_response(result)
+        order_id = result.get("id")
+        if not success:
+            return {
+                "success": False,
+                "order_id": order_id,
+                "symbol": symbol.upper(),
+                "side": side,
+                "quantity": qty,
+                "order_type": order_type,
+                "details": result,
+                "error": api_error,
+                "result_text": f"Error placing order: {api_error}",
+            }
+        return {
+            "success": True,
+            "order_id": order_id,
+            "symbol": symbol.upper(),
+            "side": side,
+            "quantity": qty,
+            "order_type": order_type,
+            "details": result,
+            "result_text": f"Order submitted: {order_id}\nDetails: {result}",
+        }
     except Exception as e:
-        return f"Error placing order: {str(e)}"
+        return {
+            "success": False,
+            "symbol": symbol.upper(),
+            "error": str(e),
+            "result_text": f"Error placing order: {str(e)}",
+        }
 
 @mcp.tool()
 def get_option_expirations(symbol: str) -> dict:
@@ -508,26 +637,30 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
         }
 
 @mcp.tool()
-def get_account_info() -> str:
-    """Get account buying power and cash info."""
+def get_account_info() -> dict:
+    """Get account buying power and cash info. Returns JSON with profile and result_text for LLM."""
     try:
         get_session()
         profile = get_account_profile()
-        return (
-            f"Buying Power: {profile.get('buying_power')}\n"
-            f"Total Cash: {profile.get('cash')}\n"
-            f"Cash Available for Withdrawal: {profile.get('cash_available_for_withdrawal')}\n"
-            f"Cash Held for Orders: {profile.get('cash_held_for_orders')}\n"
-            f"Unsettled Funds: {profile.get('unsettled_funds')}\n"
-            f"Total Equity: {profile.get('equity')}\n"
-            f"Market Value: {profile.get('market_value')}"
-        )
+        lines = [
+            f"Buying Power: {profile.get('buying_power')}",
+            f"Total Cash: {profile.get('cash')}",
+            f"Cash Available for Withdrawal: {profile.get('cash_available_for_withdrawal')}",
+            f"Cash Held for Orders: {profile.get('cash_held_for_orders')}",
+            f"Unsettled Funds: {profile.get('unsettled_funds')}",
+            f"Total Equity: {profile.get('equity')}",
+            f"Market Value: {profile.get('market_value')}",
+        ]
+        return {
+            "profile": profile,
+            "result_text": "\n".join(lines),
+        }
     except Exception as e:
-        return f"Error fetching account info: {str(e)}"
+        return {"profile": {}, "error": str(e), "result_text": f"Error fetching account info: {str(e)}"}
 
 @mcp.tool()
-def get_crypto_price(symbol: str) -> str:
-    """Fetch crypto quote.
+def get_crypto_price(symbol: str) -> dict:
+    """Fetch crypto quote. Returns JSON with quote and result_text for LLM.
     
     Args:
         symbol: Crypto ticker (e.g. BTC)
@@ -535,36 +668,42 @@ def get_crypto_price(symbol: str) -> str:
     try:
         get_session()
         quote = get_crypto_quote(symbol)
-        return (
-            f"Symbol: {quote['symbol']}\n"
-            f"Mark Price: {quote['mark_price']}\n"
-            f"Bid: {quote['bid_price']}\n"
-            f"Ask: {quote['ask_price']}\n"
-            f"High: {quote['high_price']}\n"
-            f"Low: {quote['low_price']}"
-        )
+        lines = [
+            f"Symbol: {quote['symbol']}",
+            f"Mark Price: {quote['mark_price']}",
+            f"Bid: {quote['bid_price']}",
+            f"Ask: {quote['ask_price']}",
+            f"High: {quote['high_price']}",
+            f"Low: {quote['low_price']}",
+        ]
+        return {
+            "symbol": quote.get("symbol", str(symbol).upper()),
+            "quote": quote,
+            "result_text": "\n".join(lines),
+        }
     except Exception as e:
-        return f"Error fetching crypto quote: {str(e)}"
+        return {"symbol": str(symbol).upper(), "quote": {}, "error": str(e), "result_text": f"Error fetching crypto quote: {str(e)}"}
 
 @mcp.tool()
-def get_crypto_holdings() -> str:
-    """Get current crypto positions."""
+def get_crypto_holdings() -> dict:
+    """Get current crypto positions. Returns JSON with positions array and result_text for LLM."""
     try:
         get_session()
         positions = get_crypto_positions()
         if not positions:
-            return "No crypto positions found."
-        
-        result = []
-        for pos in positions:
-            result.append(f"{pos['symbol']}: {pos['quantity']} (Cost Basis: {pos['cost_basis']})")
-        return "\n".join(result)
+            return {"positions": [], "count": 0, "result_text": "No crypto positions found."}
+        lines = [f"{pos['symbol']}: {pos['quantity']} (Cost Basis: {pos['cost_basis']})" for pos in positions]
+        return {
+            "positions": positions,
+            "count": len(positions),
+            "result_text": "\n".join(lines),
+        }
     except Exception as e:
-        return f"Error fetching crypto holdings: {str(e)}"
+        return {"positions": [], "count": 0, "error": str(e), "result_text": f"Error fetching crypto holdings: {str(e)}"}
 
 @mcp.tool()
-def execute_crypto_order(symbol: str, qty: float, side: str, order_type: str = "market", price: float = None) -> str:
-    """Place a crypto order.
+def execute_crypto_order(symbol: str, qty: float, side: str, order_type: str = "market", price: float = None) -> dict:
+    """Place a crypto order. Returns JSON with order_id and result_text for LLM.
     
     Args:
         symbol: Crypto ticker (e.g. BTC)
@@ -576,13 +715,41 @@ def execute_crypto_order(symbol: str, qty: float, side: str, order_type: str = "
     try:
         get_session()
         result = place_crypto_order(symbol, qty, side, order_type, price)
-        return f"Crypto Order submitted: {result.get('id')}\nDetails: {result}"
+        success, api_error = _validate_order_response(result)
+        order_id = result.get("id")
+        if not success:
+            return {
+                "success": False,
+                "order_id": order_id,
+                "symbol": symbol,
+                "side": side,
+                "quantity": qty,
+                "order_type": order_type,
+                "details": result,
+                "error": api_error,
+                "result_text": f"Error placing crypto order: {api_error}",
+            }
+        return {
+            "success": True,
+            "order_id": order_id,
+            "symbol": symbol,
+            "side": side,
+            "quantity": qty,
+            "order_type": order_type,
+            "details": result,
+            "result_text": f"Crypto Order submitted: {order_id}\nDetails: {result}",
+        }
     except Exception as e:
-        return f"Error placing crypto order: {str(e)}"
+        return {
+            "success": False,
+            "symbol": symbol,
+            "error": str(e),
+            "result_text": f"Error placing crypto order: {str(e)}",
+        }
 
 @mcp.tool()
-def get_stock_order_history(limit: int = 20, days: int = None, symbol: str = None) -> str:
-    """Fetch history of stock orders with optional filtering.
+def get_stock_order_history(limit: int = 20, days: int = None, symbol: str = None) -> dict:
+    """Fetch history of stock orders with optional filtering. Returns JSON with orders array and result_text for LLM.
     
     Args:
         limit: Max number of orders to return (default: 20)
@@ -593,9 +760,8 @@ def get_stock_order_history(limit: int = 20, days: int = None, symbol: str = Non
         get_session()
         orders = get_order_history()
         if not orders:
-            return "No order history found."
-        
-        # Filter by days FIRST (before expensive symbol resolution)
+            return {"orders": [], "count": 0, "result_text": "No order history found."}
+
         if days is not None:
             from datetime import timedelta, timezone
             cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -610,45 +776,47 @@ def get_stock_order_history(limit: int = 20, days: int = None, symbol: str = Non
                     except (ValueError, TypeError):
                         filtered.append(order)
             orders = filtered
-        
-        # Apply limit early to cap how many symbols we resolve
+
         orders = orders[:limit * 2] if len(orders) > limit * 2 else orders
-        
-        # Resolve symbols only for the filtered subset
+
         for order in orders:
             if not order.get('symbol'):
                 try:
                     order['symbol'] = rh.get_symbol_by_url(order.get('instrument')) or 'N/A'
                 except Exception:
                     order['symbol'] = 'N/A'
-        
-        # Filter by symbol if specified (after resolution)
+
         if symbol:
             symbol_upper = symbol.upper()
             orders = [o for o in orders if o.get('symbol', '').upper() == symbol_upper]
-        
+
         if not orders:
-            return "No matching orders found."
-        
-        result = []
-        for order in orders[:limit]:
+            return {"orders": [], "count": 0, "result_text": "No matching orders found."}
+
+        result_lines = []
+        selected = orders[:limit]
+        for order in selected:
             sym = order.get('symbol', 'N/A')
             state = order.get('state', 'unknown')
             date = order.get('created_at', 'N/A')
             avg_price = order.get('average_price') or 'N/A'
             limit_price = order.get('price') or 'N/A'
-            result.append(
+            result_lines.append(
                 f"ID: {order.get('id')} | {date} | {sym} | {order.get('side')} {order.get('quantity')} | "
                 f"state: {state} | avg_price: {avg_price} | limit_price: {limit_price} | "
                 f"type: {order.get('type', 'N/A')} | reject_reason: {order.get('reject_reason') or 'None'}"
             )
-        return "\n".join(result)
+        return {
+            "orders": selected,
+            "count": len(selected),
+            "result_text": "\n".join(result_lines),
+        }
     except Exception as e:
-        return f"Error fetching order history: {str(e)}"
+        return {"orders": [], "count": 0, "error": str(e), "result_text": f"Error fetching order history: {str(e)}"}
 
 @mcp.tool()
-def get_order_details(order_id: str) -> str:
-    """Fetch details of a specific order by UUID.
+def get_order_details(order_id: str) -> dict:
+    """Fetch details of a specific order by UUID. Returns JSON with order and result_text for LLM.
     
     Args:
         order_id: The UUID of the order
@@ -657,10 +825,10 @@ def get_order_details(order_id: str) -> str:
         get_session()
         order = get_order_detail(order_id)
         if not order:
-            return f"Order {order_id} not found."
-            
+            return {"order_id": order_id, "order": None, "error": "Not found", "result_text": f"Order {order_id} not found."}
+
         symbol = rh.get_symbol_by_url(order.get('instrument')) or 'N/A'
-        
+        order["symbol"] = symbol
         trigger = order.get('trigger', 'immediate')
         stop_price = order.get('stop_price')
         details = [
@@ -683,9 +851,13 @@ def get_order_details(order_id: str) -> str:
         ]
         for i, ex in enumerate(order.get('executions', []), 1):
             details.append(f"  Fill {i}: {ex.get('quantity')} shares @ ${ex.get('price')} at {ex.get('timestamp')}")
-        return "\n".join(details)
+        return {
+            "order_id": order_id,
+            "order": order,
+            "result_text": "\n".join(details),
+        }
     except Exception as e:
-        return f"Error fetching order details: {str(e)}"
+        return {"order_id": order_id, "order": None, "error": str(e), "result_text": f"Error fetching order details: {str(e)}"}
 
 @mcp.tool()
 def get_fundamentals(symbol: str) -> dict:
@@ -905,8 +1077,8 @@ def get_market_sentiment() -> dict:
     }
 
 @mcp.tool()
-def get_macro_news_headlines(limit: int = 10, only_today: bool = False) -> str:
-    """Get latest macroeconomic news headlines (Aggregated).
+def get_macro_news_headlines(limit: int = 10, only_today: bool = False) -> dict:
+    """Get latest macroeconomic news headlines (Aggregated). Returns JSON with articles and result_text for LLM.
     
     Args:
         limit: Number of news items to return (default: 10)
@@ -917,17 +1089,21 @@ def get_macro_news_headlines(limit: int = 10, only_today: bool = False) -> str:
         msg = "No macro news found"
         if only_today:
             msg += " for today"
-        return f"{msg}."
-    
+        return {"articles": [], "count": 0, "result_text": f"{msg}."}
+
     if "error" in news_items[0]:
-        return f"Error fetching news: {news_items[0]['error']}"
-        
+        return {"articles": [], "count": 0, "error": news_items[0]["error"], "result_text": f"Error fetching news: {news_items[0]['error']}"}
+
     output = []
     for item in news_items:
         output.append(f"- [{item.get('source', 'Unknown')}] {item['title']} ({item['published']})")
         output.append(f"  Link: {item['link']}")
-        
-    return "\n".join(output)
+    return {
+        "articles": news_items,
+        "count": len(news_items),
+        "only_today": only_today,
+        "result_text": "\n".join(output),
+    }
 
 @mcp.tool()
 def get_reddit_posts(
@@ -1099,9 +1275,12 @@ def get_reddit_trending_tickers(
         }
 
 @mcp.tool()
-def get_timestamp() -> str:
-    """Get the current server timestamp."""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+def get_timestamp() -> dict:
+    """Get the current server timestamp. Returns JSON with iso and result_text for LLM."""
+    ts = datetime.now(timezone.utc)
+    iso = ts.isoformat().replace("+00:00", "Z")
+    human = ts.strftime("%Y-%m-%d %H:%M:%S UTC")
+    return {"iso": iso, "timezone": "UTC", "result_text": human}
 
 @mcp.tool()
 def get_market_session() -> dict:
@@ -1163,12 +1342,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--transport",
         choices=["stdio", "http", "sse", "streamable-http"],
-        default="sse",
+        default="streamable-http",
         help="Transport protocol for the server",
     )
     parser.add_argument("--host", default="127.0.0.1", help="Host/address to bind to")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
-    parser.add_argument("--path", default="/sse", help="HTTP path for the endpoint")
+    parser.add_argument("--path", default="/messages", help="HTTP path for the endpoint")
 
     args = parser.parse_args()
     mcp.run(transport=args.transport, host=args.host, port=args.port, path=args.path)

@@ -17,25 +17,18 @@ from robin_options import (
     get_option_expirations as fetch_option_expirations,
 )
 from sentiment import get_fear_and_greed, get_vix
-from market_calendar import get_market_status, get_upcoming_holidays, get_early_closes
-from reddit_data import fetch_reddit_posts, fetch_reddit_post_comments
-from reddit_sentiment import (
-    get_reddit_symbol_mentions as build_reddit_symbol_mentions,
-    get_reddit_sentiment_snapshot as build_reddit_sentiment_snapshot,
-    get_reddit_trending_tickers as build_reddit_trending_tickers,
-)
-from quant import (
-    get_peers as get_symbol_peer_candidates,
-    get_sector_performance as calculate_sector_performance,
-    get_technical_indicators as calculate_technical_indicators,
-    calculate_greeks,
-    get_portfolio_correlation,
-)
+from market_calendar import get_market_status, get_upcoming_holidays
+from quant import calculate_greeks
+from pretrade_policy import evaluate_pretrade_policy
+from mcp_reddit_tools import register_reddit_tools
+from mcp_quant_tools import register_quant_tools
 
 import robin_stocks.robinhood as rh
 
 # Create an MCP server
 mcp = FastMCP("Robinhood")
+register_reddit_tools(mcp)
+register_quant_tools(mcp)
 
 
 def _extract_api_error(payload) -> str | None:
@@ -328,6 +321,26 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
     """
     try:
         get_session()
+        policy = evaluate_pretrade_policy(
+            symbol=symbol,
+            qty=qty,
+            side=side,
+            order_type=order_type,
+            price=price,
+            extended_hours=extended_hours,
+        )
+        if not policy.get("allowed"):
+            return {
+                "success": False,
+                "symbol": symbol.upper(),
+                "side": side,
+                "quantity": qty,
+                "order_type": order_type,
+                "policy": policy,
+                "error": policy.get("reason"),
+                "result_text": policy.get("reason"),
+            }
+
         result = place_order(symbol.upper(), qty, side, order_type, price,
                              stop_price=stop_price, time_in_force=time_in_force,
                              extended_hours=extended_hours)
@@ -342,6 +355,7 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
                 "quantity": qty,
                 "order_type": order_type,
                 "details": result,
+                "policy": policy,
                 "error": api_error,
                 "result_text": f"Error placing order: {api_error}",
             }
@@ -353,6 +367,7 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
             "quantity": qty,
             "order_type": order_type,
             "details": result,
+            "policy": policy,
             "result_text": f"Order submitted: {order_id}\nDetails: {result}",
         }
     except Exception as e:
@@ -929,37 +944,64 @@ def execute_crypto_order(symbol: str, qty: float, side: str, order_type: str = "
         order_type: 'market' or 'limit' (default: market)
         price: Limit price (required if order_type is limit)
     """
+    symbol_up = str(symbol).upper()
+    side_lc = str(side).lower()
+    policy = None
     try:
         get_session()
-        result = place_crypto_order(symbol, qty, side, order_type, price)
+        policy = evaluate_pretrade_policy(
+            symbol=symbol_up,
+            qty=qty,
+            side=side_lc,
+            order_type=order_type,
+            price=price,
+            extended_hours=True,
+            asset_class="crypto",
+        )
+        if not policy.get("allowed"):
+            return {
+                "success": False,
+                "symbol": symbol_up,
+                "side": side_lc,
+                "quantity": qty,
+                "order_type": order_type,
+                "policy": policy,
+                "error": policy.get("reason"),
+                "result_text": policy.get("reason"),
+            }
+
+        result = place_crypto_order(symbol_up, qty, side_lc, order_type, price)
         success, api_error = _validate_order_response(result)
         order_id = result.get("id")
         if not success:
             return {
                 "success": False,
                 "order_id": order_id,
-                "symbol": symbol,
-                "side": side,
+                "symbol": symbol_up,
+                "side": side_lc,
                 "quantity": qty,
                 "order_type": order_type,
                 "details": result,
+                "policy": policy,
                 "error": api_error,
                 "result_text": f"Error placing crypto order: {api_error}",
             }
         return {
             "success": True,
             "order_id": order_id,
-            "symbol": symbol,
-            "side": side,
+            "symbol": symbol_up,
+            "side": side_lc,
             "quantity": qty,
             "order_type": order_type,
             "details": result,
+            "policy": policy,
             "result_text": f"Crypto Order submitted: {order_id}\nDetails: {result}",
         }
     except Exception as e:
         return {
             "success": False,
-            "symbol": symbol,
+            "symbol": symbol_up,
+            "policy": policy,
             "error": str(e),
             "result_text": f"Error placing crypto order: {str(e)}",
         }
@@ -1323,175 +1365,6 @@ def get_macro_news_headlines(limit: int = 10, only_today: bool = False) -> dict:
     }
 
 @mcp.tool()
-def get_reddit_posts(
-    query: str,
-    subreddits: str = "wallstreetbets,stocks,investing,SecurityAnalysis",
-    sort: str = "new",
-    time_filter: str = "day",
-    limit: int = 50,
-) -> dict:
-    """Fetch recent Reddit posts for a query across one or more subreddits.
-
-    NOTE: Requires app credentials in env vars:
-    REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USER_AGENT
-    """
-    try:
-        payload = fetch_reddit_posts(
-            query=query,
-            subreddits=subreddits,
-            sort=sort,
-            time_filter=time_filter,
-            limit=limit,
-        )
-        posts = payload.get("posts", [])
-        lines = [f"Fetched {len(posts)} Reddit posts for query: {query}"]
-        for p in posts[:5]:
-            lines.append(
-                f"- [{p.get('subreddit')}] {p.get('title')} "
-                f"(score={p.get('score')}, comments={p.get('num_comments')})"
-            )
-        payload["result_text"] = "\n".join(lines)
-        return payload
-    except Exception as e:
-        return {
-            "posts": [],
-            "meta": {
-                "query": query,
-                "subreddits": [s.strip() for s in str(subreddits).split(",") if s.strip()],
-                "sort": sort,
-                "time_filter": time_filter,
-                "limit": limit,
-            },
-            "error": str(e),
-            "result_text": f"Error fetching Reddit posts: {str(e)}",
-        }
-
-@mcp.tool()
-def get_reddit_post_comments(post_id: str, sort: str = "top", limit: int = 100) -> dict:
-    """Fetch comments for a Reddit post by post id."""
-    try:
-        payload = fetch_reddit_post_comments(post_id=post_id, sort=sort, limit=limit)
-        comments = payload.get("comments", [])
-        lines = [f"Fetched {len(comments)} comments for post {post_id}."]
-        for c in comments[:5]:
-            lines.append(f"- score={c.get('score')}: {(c.get('body') or '')[:120]}")
-        payload["result_text"] = "\n".join(lines)
-        return payload
-    except Exception as e:
-        return {
-            "comments": [],
-            "meta": {"post_id": post_id, "sort": sort, "limit": limit},
-            "error": str(e),
-            "result_text": f"Error fetching Reddit comments: {str(e)}",
-        }
-
-@mcp.tool()
-def get_reddit_symbol_mentions(
-    symbols: str,
-    subreddits: str = "wallstreetbets,stocks,investing",
-    lookback_hours: int = 24,
-    include_comments: bool = True,
-    limit_posts: int = 100,
-) -> dict:
-    """Extract ticker mention counts and context from Reddit posts/comments."""
-    try:
-        return build_reddit_symbol_mentions(
-            symbols=symbols,
-            subreddits=subreddits,
-            lookback_hours=lookback_hours,
-            include_comments=include_comments,
-            limit_posts=limit_posts,
-        )
-    except Exception as e:
-        return {
-            "window": {},
-            "symbols": [],
-            "data_quality": {},
-            "error": str(e),
-            "result_text": f"Error computing Reddit symbol mentions: {str(e)}",
-        }
-
-@mcp.tool()
-def get_reddit_sentiment_snapshot(
-    symbols: str,
-    subreddits: str = "wallstreetbets,stocks,investing,SecurityAnalysis",
-    lookback_hours: int = 24,
-    baseline_days: int = 30,
-    limit_posts: int = 200,
-) -> dict:
-    """Compute a normalized Reddit sentiment factor per symbol."""
-    try:
-        return build_reddit_sentiment_snapshot(
-            symbols=symbols,
-            subreddits=subreddits,
-            lookback_hours=lookback_hours,
-            baseline_days=baseline_days,
-            limit_posts=limit_posts,
-        )
-    except Exception as e:
-        return {
-            "window": {},
-            "symbols": [],
-            "method": "reddit_v1",
-            "error": str(e),
-            "result_text": f"Error computing Reddit sentiment snapshot: {str(e)}",
-        }
-
-@mcp.tool()
-def get_reddit_ticker_sentiment(
-    tickers: str,
-    subreddits: str = "wallstreetbets,stocks,investing,SecurityAnalysis",
-    lookback_hours: int = 24,
-    baseline_days: int = 30,
-    limit_posts: int = 200,
-) -> dict:
-    """Compute Reddit sentiment for a manual comma-separated ticker list.
-
-    Args:
-        tickers: Comma-separated symbols (e.g. "AAPL,TSLA,NVDA")
-    """
-    try:
-        return build_reddit_sentiment_snapshot(
-            symbols=tickers,
-            subreddits=subreddits,
-            lookback_hours=lookback_hours,
-            baseline_days=baseline_days,
-            limit_posts=limit_posts,
-        )
-    except Exception as e:
-        return {
-            "window": {},
-            "symbols": [],
-            "method": "reddit_v1",
-            "error": str(e),
-            "result_text": f"Error computing Reddit ticker sentiment: {str(e)}",
-        }
-
-@mcp.tool()
-def get_reddit_trending_tickers(
-    subreddits: str = "wallstreetbets,stocks,investing",
-    lookback_hours: int = 24,
-    min_mentions: int = 15,
-    limit: int = 20,
-) -> dict:
-    """Find fast-rising ticker mentions on Reddit."""
-    try:
-        return build_reddit_trending_tickers(
-            subreddits=subreddits,
-            lookback_hours=lookback_hours,
-            min_mentions=min_mentions,
-            limit=limit,
-        )
-    except Exception as e:
-        return {
-            "window": {},
-            "trending": [],
-            "data_quality": {},
-            "error": str(e),
-            "result_text": f"Error computing Reddit trending tickers: {str(e)}",
-        }
-
-@mcp.tool()
 def get_timestamp() -> dict:
     """Get the current server timestamp. Returns JSON with iso and result_text for LLM."""
     ts = datetime.now(timezone.utc)
@@ -1553,121 +1426,6 @@ def get_market_session() -> dict:
         "market_session_calendar": market_session_calendar,
         "result_text": "\n".join(lines),
     }
-
-@mcp.tool()
-def get_technical_indicators_tool(symbol: str) -> dict:
-    """
-    Calculate technical indicators (RSI, SMA, ATR, Returns, Rel Vol) for a symbol.
-    Use this to get pre-calculated features for quant scoring.
-    """
-    result = calculate_technical_indicators(symbol)
-    sym = str(symbol).upper()
-    if result.get("error"):
-        return {
-            "symbol": sym,
-            "error": result.get("error"),
-            "result_text": f"Error computing technical indicators for {sym}: {result.get('error')}",
-        }
-    return {
-        **result,
-        "result_text": (
-            f"{sym} technicals | Price: {result.get('price')} | RSI14: {result.get('rsi_14')} | "
-            f"SMA50: {result.get('sma_50')} | SMA200: {result.get('sma_200')} | "
-            f"ATR14: {result.get('atr_14')} | Ret5d: {result.get('return_5d')} | "
-            f"Ret20d: {result.get('return_20d')} | RelVol: {result.get('relative_volume')} | "
-            f"RS%vsSPY: {result.get('rs_spy_percentile')} | "
-            f"ATRStopDist: {(result.get('volatility_sizing') or {}).get('atr_stop_dist')} | "
-            f"Shares/1kRisk: {(result.get('volatility_sizing') or {}).get('suggested_shares_per_1k_risk')}"
-        ),
-    }
-
-@mcp.tool()
-def get_sector_performance_tool() -> dict:
-    """
-    Get 5-day performance of major sector ETFs to identify leaders/laggards.
-    Returns a list of sectors sorted by performance.
-    """
-    results = calculate_sector_performance()
-    if not results:
-        return {"sectors": [], "count": 0, "result_text": "No sector data found."}
-    
-    if isinstance(results[0], dict) and "error" in results[0]:
-         return {"sectors": [], "error": results[0]["error"], "result_text": f"Error: {results[0]['error']}"}
-
-    lines = ["Sector Performance (5-Day):"]
-    for s in results:
-        lines.append(f"{s['symbol']} ({s['name']}): {s['return_5d']:.2%}")
-    
-    return {
-        "sectors": results,
-        "count": len(results),
-        "result_text": "\n".join(lines)
-    }
-
-@mcp.tool()
-def get_symbol_peers(symbol: str) -> dict:
-    """
-    Get peer ticker candidates plus sector/industry classification.
-    """
-    sym = str(symbol).upper()
-    result = get_symbol_peer_candidates(symbol)
-    if result.get("error"):
-        return {
-            "symbol": sym,
-            "sector": None,
-            "industry": None,
-            "peers": [],
-            "count": 0,
-            "error": result.get("error"),
-            "result_text": f"Error fetching peers for {sym}: {result.get('error')}",
-        }
-    if not result.get("result_text"):
-        peers = result.get("peers") or []
-        result["result_text"] = f"{sym} peers: " + ", ".join(p.get("symbol", "") for p in peers) if peers else f"No peers found for {sym}."
-    return result
-
-@mcp.tool()
-def get_portfolio_correlation_tool(symbols: str) -> dict:
-    """
-    Calculate correlation matrix for a list of symbols (comma-separated).
-    Useful for checking portfolio diversification and risk concentration.
-    Returns correlation matrix and identifies high-correlation pairs (>0.7).
-    """
-    sym_list = [s.strip().upper() for s in str(symbols or "").split(",") if s.strip()]
-    if not sym_list:
-        return {
-            "symbols": [],
-            "error": "symbols is required (comma-separated tickers, e.g. 'AAPL,MSFT,GOOG').",
-            "result_text": "Error: symbols is required (comma-separated tickers).",
-        }
-    result = get_portfolio_correlation(sym_list)
-    
-    if result.get("error"):
-        return {
-            "symbols": sym_list,
-            "error": result.get("error"),
-            "result_text": f"Error calculating correlation: {result.get('error')}"
-        }
-    
-    high_corr = result.get("high_correlation_pairs", [])
-    effective_symbols = result.get("effective_symbols") or result.get("symbols") or []
-    dropped_symbols = result.get("dropped_symbols") or []
-    lines = [f"Correlation Analysis for {len(effective_symbols)} symbols:"]
-    if high_corr:
-        lines.append("High Correlation Pairs (>0.7):")
-        for pair in high_corr:
-            p = pair.get("pair", [])
-            val = pair.get("correlation")
-            if isinstance(p, list) and len(p) == 2:
-                lines.append(f"  {p[0]} <-> {p[1]}: {val}")
-    else:
-        lines.append("No high correlation pairs found (>0.7). Portfolio looks diversified.")
-    if dropped_symbols:
-        lines.append(f"Dropped symbols (invalid/no data): {', '.join(dropped_symbols)}")
-        
-    result["result_text"] = "\n".join(lines)
-    return result
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the Robinhood MCP server")

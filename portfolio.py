@@ -51,50 +51,39 @@ def list_positions() -> List[Dict[str, Any]]:
 
     results = []
     for symbol, data in holdings.items():
-        # Calculate Today's P/L $
-        # Intraday P/L $ = Equity - (Equity / (1 + Intraday% / 100))
+        current_price = float(data.get('price', 0) or 0)
+        current_equity = float(data.get('equity', 0) or 0)
+        intraday_pct = float(data.get('intraday_percent_change', 0) or 0)
+        intraday_pl = 0.0
         try:
-            equity = float(data.get('equity', 0))
-            intraday_pct = float(data.get('intraday_percent_change', 0))
-            
-            # Use provided intraday_profit_loss if available, otherwise calculate it
             intraday_pl_raw = data.get('intraday_profit_loss')
-            
-            # Robust calculation using fresh quote data if available
             quote = quotes_map.get(symbol)
             if quote:
                 last_price = float(quote.get('last_trade_price', 0))
-                # Use adjusted_previous_close to account for splits/dividends
                 prev_close = float(quote.get('adjusted_previous_close') or quote.get('previous_close', 0))
                 quantity = float(data.get('quantity', 0))
-                
+
                 if prev_close > 0:
                     intraday_pl = (last_price - prev_close) * quantity
                     intraday_pct = ((last_price - prev_close) / prev_close) * 100
-                    
-                    # Update price/equity with fresher data if we have it
-                    price = last_price
-                    equity = price * quantity
+                    current_price = last_price
+                    current_equity = current_price * quantity
                 else:
-                     # Fallback to existing logic if quotes data is weird
-                     if intraday_pl_raw is not None:
-                         intraday_pl = float(intraday_pl_raw)
-                     elif intraday_pct == 0:
-                         intraday_pl = 0.0
-                     else:
-                         prev_equity = equity / (1 + (intraday_pct / 100))
-                         intraday_pl = equity - prev_equity
-                         
+                    if intraday_pl_raw is not None:
+                        intraday_pl = float(intraday_pl_raw)
+                    elif intraday_pct == 0:
+                        intraday_pl = 0.0
+                    else:
+                        prev_equity = current_equity / (1 + (intraday_pct / 100))
+                        intraday_pl = current_equity - prev_equity
             else:
-                # Fallback to existing logic
                 if intraday_pl_raw is not None:
-                     intraday_pl = float(intraday_pl_raw)
+                    intraday_pl = float(intraday_pl_raw)
                 elif intraday_pct == 0:
                     intraday_pl = 0.0
                 else:
-                    prev_equity = equity / (1 + (intraday_pct / 100))
-                    intraday_pl = equity - prev_equity
-                    
+                    prev_equity = current_equity / (1 + (intraday_pct / 100))
+                    intraday_pl = current_equity - prev_equity
         except (ValueError, TypeError):
             intraday_pl = 0.0
 
@@ -127,8 +116,8 @@ def list_positions() -> List[Dict[str, Any]]:
             "name": data.get("name"),
             "quantity": float(data.get("quantity", 0)),
             "average_buy_price": float(data.get("average_buy_price", 0)),
-            "price": float(data.get("price", 0)) if 'price' not in locals() else price,
-            "equity": float(data.get("equity", 0)) if 'equity' not in locals() else equity,
+            "price": current_price,
+            "equity": current_equity,
             "percent_change": float(data.get("percent_change", 0)),
             "equity_change": float(data.get("equity_change", 0)),
             "intraday_percent_change": intraday_pct,

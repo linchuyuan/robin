@@ -5,25 +5,38 @@ import server
 
 
 class TestServerContracts(unittest.TestCase):
+    @patch("server.evaluate_pretrade_policy", return_value={"allowed": True, "reason": "ok", "checks": []})
     @patch("server.get_session", return_value=None)
     @patch("server.place_order")
-    def test_execute_order_success_requires_order_id(self, mock_place_order, _mock_session):
+    def test_execute_order_success_requires_order_id(self, mock_place_order, _mock_session, _mock_policy):
         mock_place_order.return_value = {"id": "abc-123", "state": "queued"}
         result = server.execute_order.fn("AAPL", 1, "buy")
         self.assertIsInstance(result, dict)
         self.assertTrue(result.get("success"))
         self.assertEqual(result.get("order_id"), "abc-123")
         self.assertIn("result_text", result)
+        self.assertIn("policy", result)
 
+    @patch("server.evaluate_pretrade_policy", return_value={"allowed": True, "reason": "ok", "checks": []})
     @patch("server.get_session", return_value=None)
     @patch("server.place_order")
-    def test_execute_order_rejects_error_payload(self, mock_place_order, _mock_session):
+    def test_execute_order_rejects_error_payload(self, mock_place_order, _mock_session, _mock_policy):
         mock_place_order.return_value = {"detail": "insufficient buying power"}
         result = server.execute_order.fn("AAPL", 1, "buy")
         self.assertIsInstance(result, dict)
         self.assertFalse(result.get("success"))
         self.assertIn("insufficient buying power", result.get("error", ""))
         self.assertIn("result_text", result)
+
+    @patch("server.evaluate_pretrade_policy", return_value={"allowed": False, "reason": "blocked", "checks": []})
+    @patch("server.get_session", return_value=None)
+    @patch("server.place_order")
+    def test_execute_order_blocks_on_policy(self, mock_place_order, _mock_session, _mock_policy):
+        result = server.execute_order.fn("AAPL", 1, "buy")
+        self.assertFalse(result.get("success"))
+        self.assertIn("blocked", result.get("error", ""))
+        self.assertIn("policy", result)
+        mock_place_order.assert_not_called()
 
     @patch("server.get_session", return_value=None)
     @patch("server.rh.cancel_stock_order")
@@ -45,15 +58,27 @@ class TestServerContracts(unittest.TestCase):
         self.assertEqual(result.get("order_id"), "oid-1")
         self.assertIn("result_text", result)
 
+    @patch("server.evaluate_pretrade_policy", return_value={"allowed": True, "reason": "ok", "checks": []})
     @patch("server.get_session", return_value=None)
     @patch("server.place_crypto_order")
-    def test_execute_crypto_order_rejects_missing_id(self, mock_place_crypto_order, _mock_session):
+    def test_execute_crypto_order_rejects_missing_id(self, mock_place_crypto_order, _mock_session, _mock_policy):
         mock_place_crypto_order.return_value = {"state": "rejected"}
         result = server.execute_crypto_order.fn("BTC", 0.1, "buy")
         self.assertIsInstance(result, dict)
         self.assertFalse(result.get("success"))
         self.assertIn("missing order id", result.get("error", "").lower())
         self.assertIn("result_text", result)
+        self.assertIn("policy", result)
+
+    @patch("server.evaluate_pretrade_policy", return_value={"allowed": False, "reason": "blocked", "checks": []})
+    @patch("server.get_session", return_value=None)
+    @patch("server.place_crypto_order")
+    def test_execute_crypto_order_blocks_on_policy(self, mock_place_crypto_order, _mock_session, _mock_policy):
+        result = server.execute_crypto_order.fn("BTC", 0.1, "buy")
+        self.assertFalse(result.get("success"))
+        self.assertIn("blocked", result.get("error", ""))
+        self.assertIn("policy", result)
+        mock_place_crypto_order.assert_not_called()
 
     def test_timestamp_is_utc_and_zulu(self):
         result = server.get_timestamp.fn()

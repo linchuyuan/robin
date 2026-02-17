@@ -70,6 +70,9 @@ This project includes a Model Context Protocol (MCP) server, allowing AI agents 
 - **Portfolio Management:** Get current positions and account buying power.
 - **Trading:** Place market/limit orders and cancel pending orders.
 - **Market Data:** Fetch quotes, news, history, and option chains (via Yahoo Finance).
+- **Pre-Trade Safety:** Policy checks (buying power, exposure, pending-order limits, session/risk guardrails) run before stock order submission.
+  - Includes account-level daily loss guard using equity vs previous close when available.
+  - Sentiment guardrail supports fail-closed mode via `ROBIN_SENTIMENT_FAIL_CLOSED=1` (default).
 
 ### Response format (LLM-friendly)
 All MCP tools return **JSON** (not plain text). Each response includes:
@@ -77,6 +80,7 @@ All MCP tools return **JSON** (not plain text). Each response includes:
 - **`result_text`**: a short human-readable summary for the model to cite or summarize.
 - **`error`**: set when the call failed, with a descriptive message.
 - For mutating tools (for example `execute_order`, `execute_crypto_order`, `cancel_order`), a **`success`** boolean is included.
+- `execute_order` responses include a **`policy`** object summarizing pre-trade checks.
 
 This keeps outputs consistent and easy for agents to consume (e.g. via `mcporter call … --output json`).
 
@@ -180,8 +184,13 @@ On Windows, use the provided batch wrapper:
 ## Development Notes
 
 - The main modules (`auth.py`, `orders.py`, `portfolio.py`, and `cli.py`) live at the project root, and `cli.py` exposes the `click` group that powers the commands.
-- Tests (not included yet) should mock `robin_stocks` responses.
+- MCP tool registrations are split by domain (`mcp_reddit_tools.py`, `mcp_quant_tools.py`) and composed in `server.py`.
+- `pretrade_policy.py` centralizes order guardrails used by `execute_order`.
+- `backtest_engine.py` supports single-run and walk-forward protocols:
+  - `python backtest_engine.py --mode single`
+  - `python backtest_engine.py --mode walk-forward --train-days 252 --test-days 63 --step-days 63 --threshold-grid 65,70,75`
+- Tests should mock `robin_stocks` responses where possible.
 - Future features: `python cli.py watch SYMBOL`, price alerts, and portfolio rebalancing helpers.
 
 ## Last Updated
-2026-02-01
+2026-02-17

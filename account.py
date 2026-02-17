@@ -17,6 +17,11 @@ def get_account_profile() -> Dict[str, Any]:
     except Exception:
         portfolio = {}
 
+    equity_previous_close = (
+        portfolio.get("equity_previous_close")
+        or portfolio.get("adjusted_equity_previous_close")
+        or profile.get("equity_previous_close")
+    )
     return {
         "buying_power": profile.get("buying_power"),
         "cash": profile.get("cash"),
@@ -25,5 +30,8 @@ def get_account_profile() -> Dict[str, Any]:
         "unsettled_funds": profile.get("unsettled_funds"),
         "portfolio_cash": profile.get("portfolio_cash"),
         "equity": portfolio.get("equity"),
-        "market_value": portfolio.get("market_value")
+        "market_value": portfolio.get("market_value"),
+        "equity_previous_close": equity_previous_close,
+        "extended_hours_equity": portfolio.get("extended_hours_equity"),
+        "extended_hours_market_value": portfolio.get("extended_hours_market_value"),
     }

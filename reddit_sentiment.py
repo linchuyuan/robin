@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 import time
 from collections import defaultdict
@@ -121,6 +122,47 @@ SUBREDDIT_QUALITY = {
     "investing": 1.0,
     "wallstreetbets": 0.8,
 }
+
+
+_STATS_CACHE: dict[tuple, tuple[float, tuple[dict, dict]]] = {}
+_BASELINE_Z_CACHE: dict[tuple, tuple[float, dict[str, float]]] = {}
+_CACHE_TTL_SECONDS = max(60, int(os.getenv("REDDIT_SENTIMENT_CACHE_TTL_SECONDS", "300")))
+
+
+def _cache_get(cache: dict, key: tuple):
+    item = cache.get(key)
+    if not item:
+        return None
+    expires_at, value = item
+    if time.time() >= expires_at:
+        cache.pop(key, None)
+        return None
+    return value
+
+
+def _cache_put(cache: dict, key: tuple, value):
+    cache[key] = (time.time() + _CACHE_TTL_SECONDS, value)
+
+
+def _build_mention_rows(stats: Dict[str, Dict[str, Any]], symbols: List[str]) -> List[Dict[str, Any]]:
+    rows = []
+    for sym in symbols:
+        st = stats[sym]
+        avg_post = st["post_score_sum"] / st["post_score_n"] if st["post_score_n"] else 0.0
+        avg_comment = st["comment_score_sum"] / st["comment_score_n"] if st["comment_score_n"] else 0.0
+        rows.append(
+            {
+                "symbol": sym,
+                "mention_count_total": st["mention_count_total"],
+                "mention_count_posts": st["mention_count_posts"],
+                "mention_count_comments": st["mention_count_comments"],
+                "unique_authors": len(st["unique_authors"]),
+                "avg_post_score": round(avg_post, 2),
+                "avg_comment_score": round(avg_comment, 2),
+                "sample_context": st["sample_context"],
+            }
+        )
+    return rows
 
 
 def _parse_symbols(symbols: str) -> List[str]:
@@ -256,6 +298,18 @@ def _collect_symbol_stats(
     include_comments: bool,
     limit_posts: int,
 ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
+    symbols_key = tuple(sorted(set(str(s).upper() for s in symbols)))
+    cache_key = (
+        symbols_key,
+        str(subreddits or "").lower(),
+        max(1, int(lookback_hours)),
+        bool(include_comments),
+        max(1, min(int(limit_posts), 200)),
+    )
+    cached = _cache_get(_STATS_CACHE, cache_key)
+    if cached is not None:
+        return cached
+
     t0 = time.time()
     now = datetime.now(timezone.utc)
     start = now - timedelta(hours=max(1, int(lookback_hours)))
@@ -353,7 +407,9 @@ def _collect_symbol_stats(
         "time_filter": time_filter,
         "fetched_at_utc": datetime.now(timezone.utc).isoformat(),
     }
-    return stats, data_quality
+    payload = (stats, data_quality)
+    _cache_put(_STATS_CACHE, cache_key, payload)
+    return payload
 
 
 def get_reddit_symbol_mentions(
@@ -377,23 +433,7 @@ def get_reddit_symbol_mentions(
         limit_posts=limit_posts,
     )
 
-    rows = []
-    for sym in parsed:
-        st = stats[sym]
-        avg_post = st["post_score_sum"] / st["post_score_n"] if st["post_score_n"] else 0.0
-        avg_comment = st["comment_score_sum"] / st["comment_score_n"] if st["comment_score_n"] else 0.0
-        rows.append(
-            {
-                "symbol": sym,
-                "mention_count_total": st["mention_count_total"],
-                "mention_count_posts": st["mention_count_posts"],
-                "mention_count_comments": st["mention_count_comments"],
-                "unique_authors": len(st["unique_authors"]),
-                "avg_post_score": round(avg_post, 2),
-                "avg_comment_score": round(avg_comment, 2),
-                "sample_context": st["sample_context"],
-            }
-        )
+    rows = _build_mention_rows(stats, parsed)
 
     lines = []
     for r in rows:
@@ -417,19 +457,31 @@ def get_reddit_symbol_mentions(
     }
 
 
-def _baseline_mentions_poisson_z(
-    symbol: str,
-    current_mentions: int,
+def _baseline_mentions_poisson_z_batch(
+    symbols: List[str],
+    current_mentions: Dict[str, int],
     lookback_hours: int,
     subreddits: str,
     baseline_days: int,
     limit_posts: int,
-) -> float:
+) -> Dict[str, float]:
+    symbols_key = tuple(sorted(set(str(s).upper() for s in symbols)))
+    cache_key = (
+        symbols_key,
+        str(subreddits or "").lower(),
+        max(1, int(lookback_hours)),
+        max(1, int(baseline_days)),
+        max(50, min(int(limit_posts) * 3, 400)),
+    )
+    cached = _cache_get(_BASELINE_Z_CACHE, cache_key)
+    if cached is not None:
+        return cached
+
     now = datetime.now(timezone.utc)
     baseline_start = now - timedelta(days=max(1, int(baseline_days)))
     current_window_start = now - timedelta(hours=max(1, int(lookback_hours)))
     tf = "month" if baseline_days <= 31 else "year"
-    query = f"{symbol} OR ${symbol}"
+    query = _make_symbol_query(list(symbols_key))
 
     payload = fetch_reddit_posts(
         query=query,
@@ -439,7 +491,7 @@ def _baseline_mentions_poisson_z(
         limit=max(50, min(limit_posts * 3, 400)),
     )
 
-    baseline_mentions = 0
+    baseline_mentions: Dict[str, int] = {sym: 0 for sym in symbols_key}
     for post in payload.get("posts", []):
         created = post.get("created_utc")
         if created is None:
@@ -448,13 +500,19 @@ def _baseline_mentions_poisson_z(
         if not (baseline_start <= dt < current_window_start):
             continue
         text = f"{post.get('title', '')}\n{post.get('selftext', '')}"
-        if _extract_known_symbol_mentions(text, [symbol]):
-            baseline_mentions += 1
+        for symbol in _extract_known_symbol_mentions(text, list(symbols_key)):
+            baseline_mentions[symbol] += 1
 
     baseline_hours = max(1.0, float(baseline_days) * 24.0 - float(lookback_hours))
-    baseline_rate = baseline_mentions / baseline_hours
-    expected = baseline_rate * float(max(1, int(lookback_hours)))
-    return (current_mentions - expected) / math.sqrt(max(expected, 1.0))
+    z_scores: Dict[str, float] = {}
+    for symbol in symbols_key:
+        baseline_rate = baseline_mentions[symbol] / baseline_hours
+        expected = baseline_rate * float(max(1, int(lookback_hours)))
+        current = max(0, int(current_mentions.get(symbol, 0)))
+        z_scores[symbol] = (current - expected) / math.sqrt(max(expected, 1.0))
+
+    _cache_put(_BASELINE_Z_CACHE, cache_key, z_scores)
+    return z_scores
 
 
 def get_reddit_sentiment_snapshot(
@@ -468,8 +526,8 @@ def get_reddit_sentiment_snapshot(
     if not parsed:
         raise ValueError("symbols is required (comma-separated tickers).")
 
-    mentions = get_reddit_symbol_mentions(
-        symbols=",".join(parsed),
+    stats, data_quality = _collect_symbol_stats(
+        symbols=parsed,
         subreddits=subreddits,
         lookback_hours=lookback_hours,
         include_comments=True,
@@ -478,22 +536,25 @@ def get_reddit_sentiment_snapshot(
     now = datetime.now(timezone.utc)
     start = now - timedelta(hours=max(1, int(lookback_hours)))
 
-    # Build a quick lookup from mention rows.
-    mention_rows = {row["symbol"]: row for row in mentions.get("symbols", [])}
-
-    # Recompute detailed stats once to access polarity and subreddit distribution.
-    stats, _ = _collect_symbol_stats(
+    mention_rows = _build_mention_rows(stats, parsed)
+    mention_lookup = {row["symbol"]: row for row in mention_rows}
+    current_mentions = {
+        symbol: int(mention_lookup.get(symbol, {}).get("mention_count_total", 0))
+        for symbol in parsed
+    }
+    burst_z_map = _baseline_mentions_poisson_z_batch(
         symbols=parsed,
-        subreddits=subreddits,
+        current_mentions=current_mentions,
         lookback_hours=lookback_hours,
-        include_comments=True,
+        subreddits=subreddits,
+        baseline_days=baseline_days,
         limit_posts=limit_posts,
     )
 
     out = []
     for sym in parsed:
         st = stats[sym]
-        row = mention_rows.get(sym, {})
+        row = mention_lookup.get(sym, {})
         total = max(0, int(row.get("mention_count_total", 0)))
         unique_authors = max(0, int(row.get("unique_authors", 0)))
         polarity = (
@@ -512,14 +573,7 @@ def get_reddit_sentiment_snapshot(
             quality_weight += (c / sr_total) * SUBREDDIT_QUALITY.get(sr, 0.9)
         quality_weight = quality_weight or 0.9
 
-        burst_z = _baseline_mentions_poisson_z(
-            symbol=sym,
-            current_mentions=total,
-            lookback_hours=lookback_hours,
-            subreddits=subreddits,
-            baseline_days=baseline_days,
-            limit_posts=limit_posts,
-        )
+        burst_z = float(burst_z_map.get(sym, 0.0))
 
         volume_factor = min(1.0, total / 30.0)
         diversity_factor = min(1.0, unique_authors / max(1.0, total * 0.7))
@@ -570,6 +624,7 @@ def get_reddit_sentiment_snapshot(
         },
         "symbols": out,
         "method": "reddit_v1",
+        "data_quality": data_quality,
         "result_text": "\n".join(lines),
     }
 

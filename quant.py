@@ -213,7 +213,7 @@ def get_sector_performance() -> list:
     try:
         tickers_list = list(sectors.keys())
         # Batch download
-        data = yf.download(tickers_list, period="5d", progress=False)
+        data = yf.download(tickers_list, period="5d", progress=False, auto_adjust=False)
         
         # Handle MultiIndex columns (Price, Ticker) if present
         # yfinance > 0.2 returns columns like ('Close', 'XLK')
@@ -267,13 +267,15 @@ def get_portfolio_correlation(symbols: list[str], period="1y") -> dict:
         return {"error": "Need at least 2 symbols for correlation."}
 
     # Clean symbols
-    clean_symbols = list(dict.fromkeys(str(s).upper().strip() for s in symbols if str(s).strip()))
+    raw_symbols = [str(s).upper().strip() for s in symbols if str(s).strip()]
+    clean_symbols = list(dict.fromkeys(s for s in raw_symbols if s.isalpha() and 1 <= len(s) <= 5))
+    dropped_symbols = [s for s in raw_symbols if s not in clean_symbols]
     if len(clean_symbols) < 2:
         return {"error": "Need at least 2 valid symbols."}
 
     try:
         # Batch download
-        data = yf.download(clean_symbols, period=period, progress=False)
+        data = yf.download(clean_symbols, period=period, progress=False, auto_adjust=False)
         close_data = data['Close'] if 'Close' in data else data
         if isinstance(close_data, pd.Series):
             return {"error": "Insufficient valid symbols/time series after download."}
@@ -281,6 +283,8 @@ def get_portfolio_correlation(symbols: list[str], period="1y") -> dict:
         close_data = close_data.apply(pd.to_numeric, errors="coerce").dropna(axis=1, how="all")
         if close_data.shape[1] < 2:
             return {"error": "Insufficient valid symbols/time series after download."}
+        effective_symbols = [str(c) for c in close_data.columns]
+        dropped_symbols.extend([s for s in clean_symbols if s not in effective_symbols and s not in dropped_symbols])
 
         corr_matrix = close_data.corr(min_periods=20)
         
@@ -306,6 +310,8 @@ def get_portfolio_correlation(symbols: list[str], period="1y") -> dict:
         
         return {
             "symbols": clean_symbols,
+            "effective_symbols": effective_symbols,
+            "dropped_symbols": dropped_symbols,
             "correlation_matrix": matrix_dict,
             "high_correlation_pairs": high_corr_pairs,
             "count": len(high_corr_pairs)

@@ -191,6 +191,14 @@ async def test_server() -> None:
                 _assert("high_correlation_pairs" in corr, "get_portfolio_correlation_tool: missing high_correlation_pairs")
                 _assert(isinstance(corr["correlation_matrix"], dict), "correlation_matrix must be a dict")
                 _assert(len(corr["correlation_matrix"]) >= 2, "correlation_matrix should include at least 2 symbols")
+                _assert("effective_symbols" in corr, "get_portfolio_correlation_tool: missing effective_symbols")
+                _assert("dropped_symbols" in corr, "get_portfolio_correlation_tool: missing dropped_symbols")
+
+            print("Testing get_portfolio_correlation_tool invalid input...")
+            corr_invalid_raw = await session.call_tool("get_portfolio_correlation_tool", arguments={"symbols": ""})
+            corr_invalid = _extract_payload(corr_invalid_raw)
+            _assert_common_contract(corr_invalid, "get_portfolio_correlation_tool_invalid")
+            _assert("error" in corr_invalid, "get_portfolio_correlation_tool invalid input should return error")
 
             print("MCP contract tests passed.")
 

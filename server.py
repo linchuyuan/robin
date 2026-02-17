@@ -1634,6 +1634,12 @@ def get_portfolio_correlation_tool(symbols: str) -> dict:
     Returns correlation matrix and identifies high-correlation pairs (>0.7).
     """
     sym_list = [s.strip().upper() for s in str(symbols or "").split(",") if s.strip()]
+    if not sym_list:
+        return {
+            "symbols": [],
+            "error": "symbols is required (comma-separated tickers, e.g. 'AAPL,MSFT,GOOG').",
+            "result_text": "Error: symbols is required (comma-separated tickers).",
+        }
     result = get_portfolio_correlation(sym_list)
     
     if result.get("error"):
@@ -1644,7 +1650,9 @@ def get_portfolio_correlation_tool(symbols: str) -> dict:
         }
     
     high_corr = result.get("high_correlation_pairs", [])
-    lines = [f"Correlation Analysis for {len(sym_list)} symbols:"]
+    effective_symbols = result.get("effective_symbols") or result.get("symbols") or []
+    dropped_symbols = result.get("dropped_symbols") or []
+    lines = [f"Correlation Analysis for {len(effective_symbols)} symbols:"]
     if high_corr:
         lines.append("High Correlation Pairs (>0.7):")
         for pair in high_corr:
@@ -1654,6 +1662,8 @@ def get_portfolio_correlation_tool(symbols: str) -> dict:
                 lines.append(f"  {p[0]} <-> {p[1]}: {val}")
     else:
         lines.append("No high correlation pairs found (>0.7). Portfolio looks diversified.")
+    if dropped_symbols:
+        lines.append(f"Dropped symbols (invalid/no data): {', '.join(dropped_symbols)}")
         
     result["result_text"] = "\n".join(lines)
     return result

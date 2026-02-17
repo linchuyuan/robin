@@ -146,8 +146,8 @@ This keeps outputs consistent and easy for agents to consume (e.g. via `mcporter
 - `get_timestamp`: Get current server timestamp.
 - `get_crypto_holdings`: Get crypto positions.
 - `execute_crypto_order`: Place crypto orders.
-- `get_technical_indicators`: Get calculated technicals (RSI, SMA50/200, ATR, Returns, Rel Vol) for a symbol.
-- `get_sector_performance`: Get 5-day performance of major sector ETFs.
+- `get_technical_indicators_tool`: Get calculated technicals (RSI, SMA50/200, ATR, RS-vs-SPY percentile, Returns, Rel Vol, ATR-based sizing) for a symbol.
+- `get_sector_performance_tool`: Get 5-day performance of major sector ETFs.
 - `get_symbol_peers`: Get peer ticker candidates plus sector/industry context.
 - `get_portfolio_correlation_tool`: Get correlation matrix and high-correlation pairs for a list of symbols.
 

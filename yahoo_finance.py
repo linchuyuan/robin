@@ -98,14 +98,18 @@ def get_yf_options(symbol: str, expiration_date: Optional[str] = None) -> Dict[s
         return {"expirations": list(expirations)}
     
     if expiration_date not in expirations:
-        raise ValueError(f"Invalid expiration date. Available: {', '.join(expirations)}")
+        raise ValueError(
+            f"Invalid expiration date '{expiration_date}'. "
+            f"Available ({len(expirations)}): {', '.join(expirations[:10])}"
+            + (f" ... and {len(expirations) - 10} more" if len(expirations) > 10 else "")
+        )
     
     chain = ticker.option_chain(expiration_date)
     
     # Get current price to help identify ATM options
     try:
         current_price = ticker.info.get("currentPrice") or ticker.info.get("regularMarketPrice") or 0.0
-    except:
+    except Exception:
         current_price = 0.0
 
     # Convert DataFrames to lists of dicts for JSON serialization

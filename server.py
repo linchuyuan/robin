@@ -24,6 +24,11 @@ from reddit_sentiment import (
     get_reddit_sentiment_snapshot as build_reddit_sentiment_snapshot,
     get_reddit_trending_tickers as build_reddit_trending_tickers,
 )
+from quant import (
+    get_peers as get_symbol_peer_candidates,
+    get_sector_performance as calculate_sector_performance,
+    get_technical_indicators as calculate_technical_indicators,
+)
 
 import robin_stocks.robinhood as rh
 
@@ -416,6 +421,15 @@ def get_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> dic
         calls = data.get("calls", [])
         puts = data.get("puts", [])
 
+        # Calculate aggregate stats on the full chain (before filtering) for sentiment
+        total_call_vol = sum(int(c.get("volume") or 0) for c in calls)
+        total_put_vol = sum(int(p.get("volume") or 0) for p in puts)
+        total_call_oi = sum(int(c.get("open_interest") or 0) for c in calls)
+        total_put_oi = sum(int(p.get("open_interest") or 0) for p in puts)
+
+        vol_pcr = round(total_put_vol / total_call_vol, 4) if total_call_vol > 0 else None
+        oi_pcr = round(total_put_oi / total_call_oi, 4) if total_call_oi > 0 else None
+
         calls_below = sorted(
             [c for c in calls if float(c.get("strike", 0) or 0) < current_price],
             key=lambda x: float(x.get("strike", 0) or 0),
@@ -465,6 +479,14 @@ def get_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> dic
             "current_price": current_price,
             "calls": selected_calls,
             "puts": selected_puts,
+            "sentiment_stats": {
+                "total_call_volume": total_call_vol,
+                "total_put_volume": total_put_vol,
+                "total_call_oi": total_call_oi,
+                "total_put_oi": total_put_oi,
+                "volume_put_call_ratio": vol_pcr,
+                "oi_put_call_ratio": oi_pcr,
+            },
             "result_text": "\n".join(lines),
         }
     except Exception as e:
@@ -555,6 +577,34 @@ def get_yf_stock_news(symbol: str) -> dict:
         }
 
 @mcp.tool()
+def get_yf_option_expirations(symbol: str) -> dict:
+    """Fetch available option expiration dates from Yahoo Finance for a symbol."""
+    sym = str(symbol).upper()
+    try:
+        data = get_yf_options(sym)
+        expirations = list(data.get("expirations") or [])
+        if not expirations:
+            return {
+                "symbol": sym,
+                "expirations": [],
+                "result_text": f"No Yahoo option expiration dates found for {sym}.",
+            }
+        return {
+            "symbol": sym,
+            "expirations": expirations,
+            "nearest_expiration": expirations[0],
+            "result_text": f"Yahoo option expirations for {sym}:\n" + "\n".join(expirations),
+        }
+    except Exception as e:
+        return {
+            "symbol": sym,
+            "expirations": [],
+            "error": str(e),
+            "result_text": f"Error fetching Yahoo expiration dates: {str(e)}",
+        }
+
+
+@mcp.tool()
 def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> dict:
     """
     Fetch option chain data from Yahoo Finance.
@@ -574,30 +624,140 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
                 "result_text": "Error: expiration_date is required (YYYY-MM-DD).",
             }
 
-        data = get_yf_options(symbol, expiration_date)
+        try:
+            data = get_yf_options(symbol, expiration_date)
+        except ValueError as ve:
+            msg = str(ve)
+            available_expirations = []
+            try:
+                exp_data = get_yf_options(symbol)
+                available_expirations = list(exp_data.get("expirations") or [])
+            except Exception:
+                available_expirations = []
+            return {
+                "symbol": symbol.upper(),
+                "error_code": "invalid_expiration_date",
+                "error": msg,
+                "available_expirations": available_expirations,
+                "suggested_expiration": available_expirations[0] if available_expirations else None,
+                "calls": [],
+                "puts": [],
+                "result_text": f"Error: {msg}",
+            }
 
         current_price = float(data.get("current_price", 0.0) or 0.0)
         calls = data.get("calls", [])
         puts = data.get("puts", [])
 
+        # Calculate aggregate stats on the full chain (before filtering) for sentiment
+        total_call_vol = sum(int(c.get("volume") or 0) for c in calls)
+        total_put_vol = sum(int(p.get("volume") or 0) for p in puts)
+        total_call_oi = sum(int(c.get("openInterest") or 0) for c in calls)
+        total_put_oi = sum(int(p.get("openInterest") or 0) for p in puts)
+
+        vol_pcr = round(total_put_vol / total_call_vol, 4) if total_call_vol > 0 else None
+        oi_pcr = round(total_put_oi / total_call_oi, 4) if total_call_oi > 0 else None
+
+        def _to_float(value, default=0.0):
+            try:
+                if value in ("", None):
+                    return float(default)
+                return float(value)
+            except (TypeError, ValueError):
+                return float(default)
+
+        def _to_int(value, default=0):
+            try:
+                if value in ("", None):
+                    return int(default)
+                return int(float(value))
+            except (TypeError, ValueError):
+                return int(default)
+
+        def _normalize_option(opt: dict) -> dict:
+            bid = _to_float(opt.get("bid"), 0.0)
+            ask = _to_float(opt.get("ask"), 0.0)
+            last = _to_float(opt.get("lastPrice"), 0.0)
+            mid = round((bid + ask) / 2, 4) if bid > 0 and ask > 0 else last
+            return {
+                "strike": _to_float(opt.get("strike"), 0.0),
+                "price": mid,
+                "bid": bid,
+                "ask": ask,
+                "volume": _to_int(opt.get("volume"), 0),
+                "open_interest": _to_int(opt.get("openInterest"), 0),
+                "implied_volatility": _to_float(opt.get("impliedVolatility"), 0.0),
+                # Yahoo does not provide full Greeks here; keep keys for schema stability.
+                "delta": None,
+                "gamma": None,
+                "theta": None,
+                "vega": None,
+                "type": opt.get("contractSymbol", ""),
+            }
+
+        if current_price <= 0:
+            fallback_limit = max(10, int(strikes) * 4)
+            all_calls = [_normalize_option(c) for c in calls]
+            all_puts = [_normalize_option(p) for p in puts]
+            capped_calls = sorted(
+                all_calls,
+                key=lambda x: (
+                    -int(x.get("open_interest", 0) or 0),
+                    float(x.get("strike", 0) or 0),
+                ),
+            )[:fallback_limit]
+            capped_puts = sorted(
+                all_puts,
+                key=lambda x: (
+                    -int(x.get("open_interest", 0) or 0),
+                    float(x.get("strike", 0) or 0),
+                ),
+            )[:fallback_limit]
+            return {
+                "symbol": symbol.upper(),
+                "expiration_date": expiration_date,
+                "current_price": 0.0,
+                "warning": "current_price is 0 or unavailable; strike filtering skipped and response capped by open_interest for LLM safety",
+                "fallback_limit_per_side": fallback_limit,
+                "truncated": len(all_calls) > fallback_limit or len(all_puts) > fallback_limit,
+                "calls": capped_calls,
+                "puts": capped_puts,
+                "sentiment_stats": {
+                    "total_call_volume": total_call_vol,
+                    "total_put_volume": total_put_vol,
+                    "total_call_oi": total_call_oi,
+                    "total_put_oi": total_put_oi,
+                    "volume_put_call_ratio": vol_pcr,
+                    "oi_put_call_ratio": oi_pcr,
+                },
+                "result_text": (
+                    f"Warning: current_price for {symbol.upper()} is 0. "
+                    f"Returning capped fallback chain ({len(capped_calls)}/{len(all_calls)} calls, "
+                    f"{len(capped_puts)}/{len(all_puts)} puts) sorted by open_interest."
+                ),
+            }
+
+        norm_calls = [_normalize_option(c) for c in calls]
+        norm_puts = [_normalize_option(p) for p in puts]
+
         calls_below = sorted(
-            [c for c in calls if float(c.get("strike", 0) or 0) < current_price],
+            [c for c in norm_calls if float(c.get("strike", 0) or 0) < current_price],
             key=lambda x: float(x.get("strike", 0) or 0),
             reverse=True,
         )[:strikes]
         calls_above = sorted(
-            [c for c in calls if float(c.get("strike", 0) or 0) >= current_price],
+            [c for c in norm_calls if float(c.get("strike", 0) or 0) >= current_price],
             key=lambda x: float(x.get("strike", 0) or 0),
         )[:strikes]
         selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get("strike", 0) or 0))
 
         puts_below = sorted(
-            [p for p in puts if float(p.get("strike", 0) or 0) < current_price],
+            [p for p in norm_puts if float(p.get("strike", 0) or 0) < current_price],
             key=lambda x: float(x.get("strike", 0) or 0),
             reverse=True,
         )[:strikes]
         puts_above = sorted(
-            [p for p in puts if float(p.get("strike", 0) or 0) >= current_price],
+            [p for p in norm_puts if float(p.get("strike", 0) or 0) >= current_price],
             key=lambda x: float(x.get("strike", 0) or 0),
         )[:strikes]
         selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get("strike", 0) or 0))
@@ -608,13 +768,13 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
             "",
             "CALLS:",
             *[
-                f"Strike: {c.get('strike')} | Bid: {c.get('bid')} | Ask: {c.get('ask')} | Vol: {c.get('volume')}"
+                f"Strike: {c.get('strike')} | Bid: {float(c.get('bid', 0) or 0):.2f} | Ask: {float(c.get('ask', 0) or 0):.2f} | Vol: {c.get('volume')} | OI: {c.get('open_interest')}"
                 for c in selected_calls
             ],
             "",
             "PUTS:",
             *[
-                f"Strike: {p.get('strike')} | Bid: {p.get('bid')} | Ask: {p.get('ask')} | Vol: {p.get('volume')}"
+                f"Strike: {p.get('strike')} | Bid: {float(p.get('bid', 0) or 0):.2f} | Ask: {float(p.get('ask', 0) or 0):.2f} | Vol: {p.get('volume')} | OI: {p.get('open_interest')}"
                 for p in selected_puts
             ],
         ]
@@ -625,6 +785,14 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
             "current_price": current_price,
             "calls": selected_calls,
             "puts": selected_puts,
+            "sentiment_stats": {
+                "total_call_volume": total_call_vol,
+                "total_put_volume": total_put_vol,
+                "total_call_oi": total_call_oi,
+                "total_put_oi": total_put_oi,
+                "volume_put_call_ratio": vol_pcr,
+                "oi_put_call_ratio": oi_pcr,
+            },
             "result_text": "\n".join(lines),
         }
     except Exception as e:
@@ -1337,6 +1505,76 @@ def get_market_session() -> dict:
         "result_text": "\n".join(lines),
     }
 
+@mcp.tool()
+def get_technical_indicators_tool(symbol: str) -> dict:
+    """
+    Calculate technical indicators (RSI, SMA, ATR, Returns, Rel Vol) for a symbol.
+    Use this to get pre-calculated features for quant scoring.
+    """
+    result = calculate_technical_indicators(symbol)
+    sym = str(symbol).upper()
+    if result.get("error"):
+        return {
+            "symbol": sym,
+            "error": result.get("error"),
+            "result_text": f"Error computing technical indicators for {sym}: {result.get('error')}",
+        }
+    return {
+        **result,
+        "result_text": (
+            f"{sym} technicals | Price: {result.get('price')} | RSI14: {result.get('rsi_14')} | "
+            f"SMA50: {result.get('sma_50')} | SMA200: {result.get('sma_200')} | "
+            f"ATR14: {result.get('atr_14')} | Ret5d: {result.get('return_5d')} | "
+            f"Ret20d: {result.get('return_20d')} | RelVol: {result.get('relative_volume')}"
+        ),
+    }
+
+@mcp.tool()
+def get_sector_performance_tool() -> dict:
+    """
+    Get 5-day performance of major sector ETFs to identify leaders/laggards.
+    Returns a list of sectors sorted by performance.
+    """
+    results = calculate_sector_performance()
+    if not results:
+        return {"sectors": [], "count": 0, "result_text": "No sector data found."}
+    
+    if isinstance(results[0], dict) and "error" in results[0]:
+         return {"sectors": [], "error": results[0]["error"], "result_text": f"Error: {results[0]['error']}"}
+
+    lines = ["Sector Performance (5-Day):"]
+    for s in results:
+        lines.append(f"{s['symbol']} ({s['name']}): {s['return_5d']:.2%}")
+    
+    return {
+        "sectors": results,
+        "count": len(results),
+        "result_text": "\n".join(lines)
+    }
+
+@mcp.tool()
+def get_symbol_peers(symbol: str) -> dict:
+    """
+    Get peer ticker candidates plus sector/industry classification.
+    """
+    sym = str(symbol).upper()
+    result = get_symbol_peer_candidates(symbol)
+    if result.get("error"):
+        return {
+            "symbol": sym,
+            "sector": None,
+            "industry": None,
+            "peers": [],
+            "count": 0,
+            "error": result.get("error"),
+            "result_text": f"Error fetching peers for {sym}: {result.get('error')}",
+        }
+    if not result.get("result_text"):
+        peers = result.get("peers") or []
+        result["result_text"] = f"{sym} peers: " + ", ".join(p.get("symbol", "") for p in peers) if peers else f"No peers found for {sym}."
+    return result
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the Robinhood MCP server")
     parser.add_argument(
@@ -1350,4 +1588,10 @@ if __name__ == "__main__":
     parser.add_argument("--path", default="/messages", help="HTTP path for the endpoint")
 
     args = parser.parse_args()
-    mcp.run(transport=args.transport, host=args.host, port=args.port, path=args.path)
+    kwargs = {}
+    if args.transport != "stdio":
+        kwargs["host"] = args.host
+        kwargs["port"] = args.port
+        kwargs["path"] = args.path
+
+    mcp.run(transport=args.transport, **kwargs)

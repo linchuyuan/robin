@@ -39,7 +39,7 @@ def get_implied_volatility(symbol: str) -> float | None:
         atm_option = min(options, key=lambda x: abs(float(x['strike_price']) - price))
         return float(atm_option.get('implied_volatility') or 0)
         
-    except:
+    except Exception:
         return None
 
 def get_option_expirations(symbol: str) -> List[str]:
@@ -78,7 +78,7 @@ def get_option_chain(symbol: str, expiration_date: Optional[str] = None) -> Dict
     try:
         quote = rh.get_quotes(symbol)[0]
         current_price = float(quote['last_trade_price'])
-    except:
+    except Exception:
         current_price = 0.0
 
     # 3. Fetch options for the specific date

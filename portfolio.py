@@ -150,7 +150,7 @@ def get_dividends(instrument_id: str) -> List[Dict[str, Any]]:
     try:
         divs = rh.get_dividends_by_instrument(instrument_id, dividend_type='upcoming')
         return divs if divs else []
-    except:
+    except Exception:
         return []
 
 def get_quote(symbol: str) -> dict[str, str]:

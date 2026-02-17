@@ -14,7 +14,7 @@ def get_account_profile() -> Dict[str, Any]:
     # Fetch portfolio profile for equity/market value
     try:
         portfolio = rh.load_portfolio_profile()
-    except:
+    except Exception:
         portfolio = {}
 
     return {

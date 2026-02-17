@@ -126,9 +126,11 @@ This keeps outputs consistent and easy for agents to consume (e.g. via `mcporter
 - `get_stock_news` / `get_yf_stock_news`: Get latest news.
 - `get_stock_history`: Get historical price data.
 - `get_yf_stock_quote`: Get real-time quote (Yahoo).
-- `get_option_expirations`: Get available option expiration dates for a symbol (plus nearest expiration) before requesting chain data.
-- `get_option_chain`: Get option chain with Greeks (Robinhood). Requires `expiration_date`; supports `strikes` parameter.
-- `get_yf_option_chain`: Get option chain (Yahoo). Requires `expiration_date`; supports `strikes` parameter.
+- `get_yf_option_expirations`: Get available Yahoo option expiration dates for a symbol (plus nearest expiration). Preferred helper before Yahoo chain fetches.
+- `get_yf_option_chain`: Get option chain (Yahoo). Requires `expiration_date`; supports `strikes` parameter. Preferred default in this setup.
+- `get_option_expirations`: Get available Robinhood option expiration dates for a symbol (plus nearest expiration). Use when falling back to Robinhood chain.
+- `get_option_chain`: Get option chain with Greeks (Robinhood). Requires `expiration_date`; supports `strikes` parameter. Fallback/confirmatory source.
+- Endpoint priority note: Yahoo-first is only for option-chain fetches; for other categories, prefer Robinhood endpoints.
 - `get_crypto_price`: Get crypto quote.
 - `get_fundamentals`: Get P/E, Market Cap, and other stats (Robinhood).
 - `get_market_sentiment`: Get Fear & Greed Index and VIX.
@@ -144,6 +146,9 @@ This keeps outputs consistent and easy for agents to consume (e.g. via `mcporter
 - `get_timestamp`: Get current server timestamp.
 - `get_crypto_holdings`: Get crypto positions.
 - `execute_crypto_order`: Place crypto orders.
+- `get_technical_indicators`: Get calculated technicals (RSI, SMA50/200, ATR, Returns, Rel Vol) for a symbol.
+- `get_sector_performance`: Get 5-day performance of major sector ETFs.
+- `get_symbol_peers`: Get peer ticker candidates plus sector/industry context.
 
 ## Execution
 

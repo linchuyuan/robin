@@ -61,6 +61,7 @@ def _assert_option_shape(option: dict, tool_name: str) -> None:
         "gamma",
         "theta",
         "vega",
+        "rho",
     ]
     for key in required_keys:
         _assert(key in option, f"{tool_name}: option item missing key '{key}'")
@@ -126,6 +127,7 @@ async def test_server() -> None:
                     _assert(isinstance(chain["calls"], list), "get_yf_option_chain: calls must be list")
                     _assert(isinstance(chain["puts"], list), "get_yf_option_chain: puts must be list")
                     _assert("sentiment_stats" in chain, "get_yf_option_chain: missing sentiment_stats")
+                    _assert("greeks_estimation" in chain, "get_yf_option_chain: missing greeks_estimation")
                     stats = chain["sentiment_stats"]
                     for k in ("total_call_volume", "total_put_volume", "volume_put_call_ratio"):
                         _assert(k in stats, f"get_yf_option_chain: missing stat {k}")
@@ -134,8 +136,22 @@ async def test_server() -> None:
                         _assert("truncated" in chain, "get_yf_option_chain warning path: missing truncated flag")
                     if chain["calls"]:
                         _assert_option_shape(chain["calls"][0], "get_yf_option_chain.calls")
+                        call0 = chain["calls"][0]
+                        if call0.get("delta") is not None:
+                            _assert(call0["delta"] >= -0.05, "call delta should be near non-negative")
+                        if call0.get("gamma") is not None:
+                            _assert(call0["gamma"] >= 0, "call gamma should be non-negative")
+                        if call0.get("vega") is not None:
+                            _assert(call0["vega"] >= 0, "call vega should be non-negative")
                     if chain["puts"]:
                         _assert_option_shape(chain["puts"][0], "get_yf_option_chain.puts")
+                        put0 = chain["puts"][0]
+                        if put0.get("delta") is not None:
+                            _assert(put0["delta"] <= 0.05, "put delta should be near non-positive")
+                        if put0.get("gamma") is not None:
+                            _assert(put0["gamma"] >= 0, "put gamma should be non-negative")
+                        if put0.get("vega") is not None:
+                            _assert(put0["vega"] >= 0, "put vega should be non-negative")
 
                 print("Testing get_yf_option_chain invalid expiration handling...")
                 invalid_raw = await session.call_tool(

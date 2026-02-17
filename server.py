@@ -28,6 +28,7 @@ from quant import (
     get_peers as get_symbol_peer_candidates,
     get_sector_performance as calculate_sector_performance,
     get_technical_indicators as calculate_technical_indicators,
+    calculate_greeks,
 )
 
 import robin_stocks.robinhood as rh
@@ -658,6 +659,21 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
         vol_pcr = round(total_put_vol / total_call_vol, 4) if total_call_vol > 0 else None
         oi_pcr = round(total_put_oi / total_call_oi, 4) if total_call_oi > 0 else None
 
+        # Time to expiration in years (fractional-day precision for near-dated contracts)
+        try:
+            exp_dt = datetime.strptime(data.get("expiration_date"), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            now_dt = datetime.now(timezone.utc)
+            seconds_to_expiry = (exp_dt - now_dt).total_seconds()
+            time_to_expiry = seconds_to_expiry / 31557600.0  # 365.25 days
+            if time_to_expiry < 0.001:
+                time_to_expiry = 0.001  # Avoid unstable 0-DTE math
+        except Exception:
+            time_to_expiry = 0.0
+
+        # Greek estimation assumptions (Yahoo path)
+        risk_free_rate = 0.045
+        dividend_yield = 0.0
+
         def _to_float(value, default=0.0):
             try:
                 if value in ("", None):
@@ -674,31 +690,48 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
             except (TypeError, ValueError):
                 return int(default)
 
-        def _normalize_option(opt: dict) -> dict:
+        def _normalize_option(opt: dict, option_side: str) -> dict:
             bid = _to_float(opt.get("bid"), 0.0)
             ask = _to_float(opt.get("ask"), 0.0)
             last = _to_float(opt.get("lastPrice"), 0.0)
             mid = round((bid + ask) / 2, 4) if bid > 0 and ask > 0 else last
+            
+            strike = _to_float(opt.get("strike"), 0.0)
+            iv = _to_float(opt.get("impliedVolatility"), 0.0)
+
+            # Calculate Greeks if we have valid inputs
+            greeks = {k: None for k in ["delta", "gamma", "theta", "vega", "rho"]}
+            if current_price > 0 and strike > 0 and time_to_expiry > 0 and iv > 0:
+                greeks = calculate_greeks(
+                    S=current_price,
+                    K=strike,
+                    T=time_to_expiry,
+                    r=risk_free_rate,
+                    sigma=iv,
+                    q=dividend_yield,
+                    option_type=option_side,
+                )
+
             return {
-                "strike": _to_float(opt.get("strike"), 0.0),
+                "strike": strike,
                 "price": mid,
                 "bid": bid,
                 "ask": ask,
                 "volume": _to_int(opt.get("volume"), 0),
                 "open_interest": _to_int(opt.get("openInterest"), 0),
-                "implied_volatility": _to_float(opt.get("impliedVolatility"), 0.0),
-                # Yahoo does not provide full Greeks here; keep keys for schema stability.
-                "delta": None,
-                "gamma": None,
-                "theta": None,
-                "vega": None,
+                "implied_volatility": iv,
+                "delta": greeks["delta"],
+                "gamma": greeks["gamma"],
+                "theta": greeks["theta"],
+                "vega": greeks["vega"],
+                "rho": greeks["rho"],
                 "type": opt.get("contractSymbol", ""),
             }
 
         if current_price <= 0:
             fallback_limit = max(10, int(strikes) * 4)
-            all_calls = [_normalize_option(c) for c in calls]
-            all_puts = [_normalize_option(p) for p in puts]
+            all_calls = [_normalize_option(c, "call") for c in calls]
+            all_puts = [_normalize_option(p, "put") for p in puts]
             capped_calls = sorted(
                 all_calls,
                 key=lambda x: (
@@ -730,6 +763,13 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
                     "volume_put_call_ratio": vol_pcr,
                     "oi_put_call_ratio": oi_pcr,
                 },
+                "greeks_estimation": {
+                    "source": "black_scholes_estimated",
+                    "risk_free_rate": risk_free_rate,
+                    "dividend_yield": dividend_yield,
+                    "time_to_expiry_years": round(time_to_expiry, 6),
+                    "confidence": "estimated",
+                },
                 "result_text": (
                     f"Warning: current_price for {symbol.upper()} is 0. "
                     f"Returning capped fallback chain ({len(capped_calls)}/{len(all_calls)} calls, "
@@ -737,8 +777,8 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
                 ),
             }
 
-        norm_calls = [_normalize_option(c) for c in calls]
-        norm_puts = [_normalize_option(p) for p in puts]
+        norm_calls = [_normalize_option(c, "call") for c in calls]
+        norm_puts = [_normalize_option(p, "put") for p in puts]
 
         calls_below = sorted(
             [c for c in norm_calls if float(c.get("strike", 0) or 0) < current_price],
@@ -792,6 +832,13 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
                 "total_put_oi": total_put_oi,
                 "volume_put_call_ratio": vol_pcr,
                 "oi_put_call_ratio": oi_pcr,
+            },
+            "greeks_estimation": {
+                "source": "black_scholes_estimated",
+                "risk_free_rate": risk_free_rate,
+                "dividend_yield": dividend_yield,
+                "time_to_expiry_years": round(time_to_expiry, 6),
+                "confidence": "estimated",
             },
             "result_text": "\n".join(lines),
         }

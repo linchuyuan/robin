@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 import yfinance as yf
+import math
 
 def calculate_rsi(series, period=14):
     """Calculate Relative Strength Index (RSI) using Wilder's Smoothing."""
@@ -24,6 +25,67 @@ def calculate_atr(high, low, close, period=14):
     tr3 = abs(low - close.shift())
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     return tr.rolling(window=period).mean()
+
+def _norm_cdf(x):
+    """Cumulative distribution function for the standard normal distribution."""
+    return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
+
+def _norm_pdf(x):
+    """Probability density function for the standard normal distribution."""
+    return math.exp(-0.5 * x ** 2) / math.sqrt(2.0 * math.pi)
+
+def calculate_greeks(S, K, T, r, sigma, q=0.0, option_type="call"):
+    """
+    Calculate Black-Scholes Greeks.
+    
+    :param S: Underlying price
+    :param K: Strike price
+    :param T: Time to expiration (in years)
+    :param r: Risk-free interest rate (decimal, e.g., 0.05)
+    :param sigma: Implied volatility (decimal, e.g., 0.20)
+    :param q: Dividend yield (decimal, e.g., 0.01)
+    :param option_type: "call" or "put"
+    :return: Dictionary with delta, gamma, theta, vega, rho
+    """
+    if T <= 0 or sigma <= 0 or S <= 0 or K <= 0:
+        return {k: None for k in ["delta", "gamma", "theta", "vega", "rho"]}
+
+    try:
+        d1 = (math.log(S / K) + (r - q + 0.5 * sigma ** 2) * T) / (sigma * math.sqrt(T))
+        d2 = d1 - sigma * math.sqrt(T)
+
+        cdf_d1 = _norm_cdf(d1)
+        pdf_d1 = _norm_pdf(d1)
+        cdf_d2 = _norm_cdf(d2)
+        
+        # Common Gamma/Vega (same for calls and puts)
+        gamma = (pdf_d1 * math.exp(-q * T)) / (S * sigma * math.sqrt(T))
+        vega = S * math.exp(-q * T) * pdf_d1 * math.sqrt(T) / 100.0  # Scaled to 1% change
+
+        if option_type.lower() == "call":
+            delta = math.exp(-q * T) * cdf_d1
+            theta = ((-S * sigma * math.exp(-q * T) * pdf_d1) / (2 * math.sqrt(T)) 
+                     - r * K * math.exp(-r * T) * cdf_d2 
+                     + q * S * math.exp(-q * T) * cdf_d1) / 365.0
+            rho = (K * T * math.exp(-r * T) * cdf_d2) / 100.0
+        else:
+            delta = math.exp(-q * T) * (cdf_d1 - 1)
+            cdf_neg_d2 = _norm_cdf(-d2)
+            cdf_neg_d1 = _norm_cdf(-d1)
+            theta = ((-S * sigma * math.exp(-q * T) * pdf_d1) / (2 * math.sqrt(T)) 
+                     + r * K * math.exp(-r * T) * cdf_neg_d2 
+                     - q * S * math.exp(-q * T) * cdf_neg_d1) / 365.0
+            rho = (-K * T * math.exp(-r * T) * cdf_neg_d2) / 100.0
+
+        return {
+            "delta": round(delta, 4),
+            "gamma": round(gamma, 4),
+            "theta": round(theta, 4),
+            "vega": round(vega, 4),
+            "rho": round(rho, 4)
+        }
+    except Exception:
+        return {k: None for k in ["delta", "gamma", "theta", "vega", "rho"]}
 
 def get_technical_indicators(symbol: str) -> dict:
     """

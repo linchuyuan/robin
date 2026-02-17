@@ -149,6 +149,7 @@ This keeps outputs consistent and easy for agents to consume (e.g. via `mcporter
 - `get_technical_indicators`: Get calculated technicals (RSI, SMA50/200, ATR, Returns, Rel Vol) for a symbol.
 - `get_sector_performance`: Get 5-day performance of major sector ETFs.
 - `get_symbol_peers`: Get peer ticker candidates plus sector/industry context.
+- `get_portfolio_correlation_tool`: Get correlation matrix and high-correlation pairs for a list of symbols.
 
 ## Execution
 

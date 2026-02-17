@@ -64,6 +64,8 @@ def get_yf_quote(symbol: str) -> Dict[str, Any]:
         "earnings_date": earnings_date,
         "profit_margins": info.get("profitMargins"),
         "revenue_growth": info.get("revenueGrowth"),
+        "short_percent_float": info.get("shortPercentOfFloat"),
+        "held_percent_insiders": info.get("heldPercentInsiders"),
     }
 
 def get_yf_news(symbol: str) -> List[Dict[str, Any]]:

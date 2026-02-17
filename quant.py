@@ -26,6 +26,35 @@ def calculate_atr(high, low, close, period=14):
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     return tr.rolling(window=period).mean()
 
+def calculate_relative_strength(series, benchmark_series, period=252):
+    """
+    Calculate Relative Strength (RS) ratio and its percentile rank.
+    RS = Stock / Benchmark
+    Returns the percentile (0-100) of the current RS value over the lookback period.
+    """
+    # Align and sanitize series
+    common_index = series.index.intersection(benchmark_series.index)
+    if len(common_index) < period:
+        return None
+
+    stock = pd.to_numeric(series.loc[common_index], errors="coerce")
+    bench = pd.to_numeric(benchmark_series.loc[common_index], errors="coerce")
+    valid = bench > 0
+    stock = stock[valid]
+    bench = bench[valid]
+    if len(stock) < period:
+        return None
+
+    rs_ratio = (stock / bench).replace([float("inf"), float("-inf")], pd.NA).dropna()
+    if len(rs_ratio) < period:
+        return None
+    # Calculate percentile rank of current value within the lookback window
+    # We want to know: is the RS ratio high relative to its recent history?
+    current_rs = rs_ratio.iloc[-1]
+    history_rs = rs_ratio.iloc[-period:]
+    percentile = (history_rs <= current_rs).mean() * 100
+    return percentile
+
 def _norm_cdf(x):
     """Cumulative distribution function for the standard normal distribution."""
     return (1.0 + math.erf(x / math.sqrt(2.0))) / 2.0
@@ -98,6 +127,10 @@ def get_technical_indicators(symbol: str) -> dict:
         # Get 2 years to be safe for 200 SMA + volatility
         hist = ticker.history(period="2y")
         
+        # Fetch SPY for Relative Strength
+        spy_ticker = yf.Ticker("SPY")
+        spy_hist = spy_ticker.history(period="2y")
+        
         if len(hist) < 200:
              return {"error": f"Not enough history for {symbol} (found {len(hist)} days)"}
 
@@ -116,6 +149,9 @@ def get_technical_indicators(symbol: str) -> dict:
         atr_series = calculate_atr(hist['High'], hist['Low'], hist['Close'])
         atr_14 = atr_series.iloc[-1]
         
+        # Relative Strength vs SPY (1-year lookback percentile)
+        rs_percentile = calculate_relative_strength(hist['Close'], spy_hist['Close'], period=252)
+        
         # Returns
         ret_5d = (hist['Close'].iloc[-1] / hist['Close'].iloc[-6] - 1) if len(hist) >= 6 else 0.0
         ret_20d = (hist['Close'].iloc[-1] / hist['Close'].iloc[-21] - 1) if len(hist) >= 21 else 0.0
@@ -126,6 +162,14 @@ def get_technical_indicators(symbol: str) -> dict:
         curr_vol = hist['Volume'].iloc[-1]
         rel_vol = (curr_vol / vol_20d_avg) if vol_20d_avg > 0 else 1.0
 
+        # ATR-based Sizing (Volatility Normalization)
+        # Suggested shares for $1,000 risk unit with 2xATR stop
+        # Risk = 2 * ATR
+        # Shares = $1000 / (2 * ATR)
+        risk_unit = 1000.0
+        stop_distance = 2.0 * atr_14 if atr_14 and atr_14 > 0 else None
+        vol_shares = int(risk_unit / stop_distance) if stop_distance else 0
+
         return {
             "symbol": symbol.upper(),
             "price": round(float(current_price), 2),
@@ -133,9 +177,15 @@ def get_technical_indicators(symbol: str) -> dict:
             "sma_200": round(float(sma_200), 2) if not pd.isna(sma_200) else None,
             "rsi_14": round(float(rsi_14), 2) if not pd.isna(rsi_14) else None,
             "atr_14": round(float(atr_14), 2) if not pd.isna(atr_14) else None,
+            "rs_spy_percentile": round(float(rs_percentile), 2) if rs_percentile is not None else None,
             "return_5d": round(float(ret_5d), 4),
             "return_20d": round(float(ret_20d), 4),
             "relative_volume": round(float(rel_vol), 2),
+            "volatility_sizing": {
+                "risk_unit": risk_unit,
+                "atr_stop_dist": round(float(stop_distance), 2) if stop_distance else None,
+                "suggested_shares_per_1k_risk": vol_shares
+            },
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "timezone": "UTC",
         }
@@ -207,6 +257,61 @@ def get_sector_performance() -> list:
         
     except Exception as e:
         return [{"error": str(e)}]
+
+def get_portfolio_correlation(symbols: list[str], period="1y") -> dict:
+    """
+    Calculate correlation matrix for a list of symbols.
+    Returns a dictionary with the correlation matrix and high-correlation pairs (>0.7).
+    """
+    if not symbols or len(symbols) < 2:
+        return {"error": "Need at least 2 symbols for correlation."}
+
+    # Clean symbols
+    clean_symbols = list(dict.fromkeys(str(s).upper().strip() for s in symbols if str(s).strip()))
+    if len(clean_symbols) < 2:
+        return {"error": "Need at least 2 valid symbols."}
+
+    try:
+        # Batch download
+        data = yf.download(clean_symbols, period=period, progress=False)
+        close_data = data['Close'] if 'Close' in data else data
+        if isinstance(close_data, pd.Series):
+            return {"error": "Insufficient valid symbols/time series after download."}
+
+        close_data = close_data.apply(pd.to_numeric, errors="coerce").dropna(axis=1, how="all")
+        if close_data.shape[1] < 2:
+            return {"error": "Insufficient valid symbols/time series after download."}
+
+        corr_matrix = close_data.corr(min_periods=20)
+        
+        # Identify high correlation pairs (> 0.7)
+        high_corr_pairs = []
+        # Iterate over upper triangle
+        cols = corr_matrix.columns
+        for i in range(len(cols)):
+            for j in range(i + 1, len(cols)):
+                sym1 = cols[i]
+                sym2 = cols[j]
+                val = corr_matrix.iloc[i, j]
+                if pd.notna(val) and val > 0.7:
+                    high_corr_pairs.append({
+                        "pair": [str(sym1), str(sym2)],
+                        "correlation": round(float(val), 2)
+                    })
+        
+        # Convert matrix to dict for JSON
+        # { "AAPL": { "MSFT": 0.8, ... }, ... }
+        corr_clean = corr_matrix.round(2).where(pd.notna(corr_matrix), None)
+        matrix_dict = corr_clean.to_dict()
+        
+        return {
+            "symbols": clean_symbols,
+            "correlation_matrix": matrix_dict,
+            "high_correlation_pairs": high_corr_pairs,
+            "count": len(high_corr_pairs)
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 def get_peers(symbol: str, limit: int = 6) -> dict:
     """Return peer ticker candidates for a symbol.

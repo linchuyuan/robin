@@ -89,8 +89,19 @@ async def test_server() -> None:
             tech = _extract_payload(tech_raw)
             _assert_common_contract(tech, "get_technical_indicators_tool")
             if "error" not in tech:
-                for key in ("symbol", "price", "sma_50", "sma_200", "rsi_14", "atr_14", "return_5d", "return_20d", "relative_volume", "timestamp", "timezone"):
+                for key in ("symbol", "price", "sma_50", "sma_200", "rsi_14", "atr_14", "rs_spy_percentile", "return_5d", "return_20d", "relative_volume", "volatility_sizing", "timestamp", "timezone"):
                     _assert(key in tech, f"get_technical_indicators_tool: missing key '{key}'")
+                _assert(isinstance(tech["volatility_sizing"], dict), "volatility_sizing must be a dict")
+                _assert("suggested_shares_per_1k_risk" in tech["volatility_sizing"], "volatility_sizing missing suggested_shares")
+
+            print("Testing get_yf_stock_quote...")
+            yf_quote_raw = await session.call_tool("get_yf_stock_quote", arguments={"symbol": "AAPL"})
+            yf_quote = _extract_payload(yf_quote_raw)
+            _assert_common_contract(yf_quote, "get_yf_stock_quote")
+            if "error" not in yf_quote:
+                quote_data = yf_quote.get("quote", {})
+                for key in ("symbol", "current_price", "short_percent_float", "held_percent_insiders"):
+                    _assert(key in quote_data, f"get_yf_stock_quote: missing key '{key}' in quote object")
 
             print("Testing get_sector_performance_tool...")
             sector_raw = await session.call_tool("get_sector_performance_tool", arguments={})
@@ -170,6 +181,16 @@ async def test_server() -> None:
                     )
             else:
                 print("Skipping get_yf_option_chain call: no Yahoo expirations available.")
+
+            print("Testing get_portfolio_correlation_tool...")
+            corr_raw = await session.call_tool("get_portfolio_correlation_tool", arguments={"symbols": "AAPL,MSFT,GOOG"})
+            corr = _extract_payload(corr_raw)
+            _assert_common_contract(corr, "get_portfolio_correlation_tool")
+            if "error" not in corr:
+                _assert("correlation_matrix" in corr, "get_portfolio_correlation_tool: missing correlation_matrix")
+                _assert("high_correlation_pairs" in corr, "get_portfolio_correlation_tool: missing high_correlation_pairs")
+                _assert(isinstance(corr["correlation_matrix"], dict), "correlation_matrix must be a dict")
+                _assert(len(corr["correlation_matrix"]) >= 2, "correlation_matrix should include at least 2 symbols")
 
             print("MCP contract tests passed.")
 

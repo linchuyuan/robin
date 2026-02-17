@@ -29,6 +29,7 @@ from quant import (
     get_sector_performance as calculate_sector_performance,
     get_technical_indicators as calculate_technical_indicators,
     calculate_greeks,
+    get_portfolio_correlation,
 )
 
 import robin_stocks.robinhood as rh
@@ -526,6 +527,7 @@ def get_yf_stock_quote(symbol: str) -> dict:
             f"Earnings Date: {quote.get('earnings_date', 'N/A')}",
             f"Profit Margins: {quote.get('profit_margins')} | Revenue Growth: {quote.get('revenue_growth')}",
             f"Short Ratio: {quote.get('short_ratio')}",
+            f"Short Float: {quote.get('short_percent_float')} | Insider Held: {quote.get('held_percent_insiders')}",
         ]
         return {
             "symbol": (quote.get('symbol') or str(symbol).upper()),
@@ -1572,7 +1574,10 @@ def get_technical_indicators_tool(symbol: str) -> dict:
             f"{sym} technicals | Price: {result.get('price')} | RSI14: {result.get('rsi_14')} | "
             f"SMA50: {result.get('sma_50')} | SMA200: {result.get('sma_200')} | "
             f"ATR14: {result.get('atr_14')} | Ret5d: {result.get('return_5d')} | "
-            f"Ret20d: {result.get('return_20d')} | RelVol: {result.get('relative_volume')}"
+            f"Ret20d: {result.get('return_20d')} | RelVol: {result.get('relative_volume')} | "
+            f"RS%vsSPY: {result.get('rs_spy_percentile')} | "
+            f"ATRStopDist: {(result.get('volatility_sizing') or {}).get('atr_stop_dist')} | "
+            f"Shares/1kRisk: {(result.get('volatility_sizing') or {}).get('suggested_shares_per_1k_risk')}"
         ),
     }
 
@@ -1619,6 +1624,38 @@ def get_symbol_peers(symbol: str) -> dict:
     if not result.get("result_text"):
         peers = result.get("peers") or []
         result["result_text"] = f"{sym} peers: " + ", ".join(p.get("symbol", "") for p in peers) if peers else f"No peers found for {sym}."
+    return result
+
+@mcp.tool()
+def get_portfolio_correlation_tool(symbols: str) -> dict:
+    """
+    Calculate correlation matrix for a list of symbols (comma-separated).
+    Useful for checking portfolio diversification and risk concentration.
+    Returns correlation matrix and identifies high-correlation pairs (>0.7).
+    """
+    sym_list = [s.strip().upper() for s in str(symbols or "").split(",") if s.strip()]
+    result = get_portfolio_correlation(sym_list)
+    
+    if result.get("error"):
+        return {
+            "symbols": sym_list,
+            "error": result.get("error"),
+            "result_text": f"Error calculating correlation: {result.get('error')}"
+        }
+    
+    high_corr = result.get("high_correlation_pairs", [])
+    lines = [f"Correlation Analysis for {len(sym_list)} symbols:"]
+    if high_corr:
+        lines.append("High Correlation Pairs (>0.7):")
+        for pair in high_corr:
+            p = pair.get("pair", [])
+            val = pair.get("correlation")
+            if isinstance(p, list) and len(p) == 2:
+                lines.append(f"  {p[0]} <-> {p[1]}: {val}")
+    else:
+        lines.append("No high correlation pairs found (>0.7). Portfolio looks diversified.")
+        
+    result["result_text"] = "\n".join(lines)
     return result
 
 

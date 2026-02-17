@@ -21,15 +21,22 @@ def test_tech_ind() -> None:
         "sma_200",
         "rsi_14",
         "atr_14",
+        "rs_spy_percentile",
         "return_5d",
         "return_20d",
         "relative_volume",
+        "volatility_sizing",
         "timestamp",
         "timezone",
     ]
     for key in required:
         _assert(key in res, f"Missing key in technical indicators: {key}")
     _assert(res.get("timezone") == "UTC", "Technical indicators timezone should be UTC")
+    _assert(isinstance(res.get("volatility_sizing"), dict), "volatility_sizing should be a dict")
+    _assert("suggested_shares_per_1k_risk" in res["volatility_sizing"], "volatility_sizing missing suggested shares")
+    rs_pct = res.get("rs_spy_percentile")
+    if rs_pct is not None:
+        _assert(0 <= rs_pct <= 100, "rs_spy_percentile should be between 0 and 100")
 
 
 def test_sector_perf() -> None:

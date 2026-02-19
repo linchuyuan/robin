@@ -11,6 +11,8 @@ from market_calendar import get_market_status
 from portfolio import list_positions
 from reddit_sentiment import get_reddit_sentiment_snapshot
 
+DEFAULT_HARD_EXCLUDE_SYMBOLS = {"AMD", "AVGO", "CEG", "GOOG", "NVDA", "SLV"}
+
 
 def _to_float(value: Any, default: float = 0.0) -> float:
     try:
@@ -42,6 +44,15 @@ def _is_truthy_env(name: str, default: bool) -> bool:
     return str(raw).strip().lower() not in {"0", "false", "no", "off"}
 
 
+def _get_symbol_set_env(name: str, default: set[str]) -> set[str]:
+    raw = os.getenv(name)
+    if raw in ("", None):
+        return set(default)
+    values = [item.strip().upper() for item in str(raw).split(",")]
+    cleaned = {item for item in values if item}
+    return cleaned if cleaned else set(default)
+
+
 def _first_quote_price(symbol: str) -> float:
     try:
         quotes = rh.get_quotes(symbol.upper()) or []
@@ -54,6 +65,16 @@ def _first_quote_price(symbol: str) -> float:
     except Exception:
         return 0.0
     return 0.0
+
+
+def _resolve_open_order_symbol(order: dict) -> str:
+    order_symbol = str(order.get("symbol") or "").upper().strip()
+    if order_symbol:
+        return order_symbol
+    try:
+        return str(rh.get_symbol_by_url(order.get("instrument")) or "").upper().strip()
+    except Exception:
+        return ""
 
 
 def evaluate_pretrade_policy(
@@ -91,6 +112,8 @@ def evaluate_pretrade_policy(
     enable_sentiment_guardrail = _is_truthy_env("ROBIN_ENABLE_SENTIMENT_GUARDRAIL", True)
     sentiment_fail_closed = _is_truthy_env("ROBIN_SENTIMENT_FAIL_CLOSED", True)
     sentiment_confidence_floor = _get_float_env("ROBIN_SENTIMENT_CONFIDENCE_FLOOR", 0.45)
+    enable_hard_exclude = _is_truthy_env("ROBIN_ENABLE_HARD_EXCLUDE", True)
+    hard_exclude_symbols = _get_symbol_set_env("ROBIN_HARD_EXCLUDE_SYMBOLS", DEFAULT_HARD_EXCLUDE_SYMBOLS)
 
     checks: list[dict[str, str]] = []
     blocked_by: str | None = None
@@ -100,6 +123,22 @@ def evaluate_pretrade_policy(
         checks.append({"name": name, "status": "pass" if passed else "fail", "detail": detail})
         if not passed and blocked_by is None:
             blocked_by = name
+
+    # Fail closed for configured do-not-trade symbols at execution time.
+    hard_exclude_hit = (
+        asset_class_lc == "stock"
+        and enable_hard_exclude
+        and symbol_up in hard_exclude_symbols
+    )
+    add_check(
+        "hard_exclude_list",
+        not hard_exclude_hit,
+        (
+            f"asset_class={asset_class_lc}, symbol={symbol_up}, side={side_lc}, "
+            f"enabled={int(enable_hard_exclude)}, "
+            f"excluded={','.join(sorted(hard_exclude_symbols))}"
+        ),
+    )
 
     try:
         account = get_account_profile() or {}
@@ -137,7 +176,31 @@ def evaluate_pretrade_policy(
         for pos in positions
         if str(pos.get("symbol", "")).upper() == symbol_up
     )
-    symbol_equity_after = symbol_equity_now + (order_notional if side_lc == "buy" else -order_notional)
+    pending_for_symbol = 0
+    pending_buy_notional_total = 0.0
+    pending_buy_notional_symbol = 0.0
+    if asset_class_lc == "stock":
+        for order in open_orders:
+            order_symbol = _resolve_open_order_symbol(order)
+            if order_symbol == symbol_up:
+                pending_for_symbol += 1
+
+            order_side = str(order.get("side") or "").lower().strip()
+            if order_side != "buy":
+                continue
+            qty_open = _to_float(order.get("quantity"), 0.0)
+            if qty_open <= 0:
+                continue
+            order_price = _to_float(order.get("price"), 0.0)
+            if order_price <= 0 and order_symbol:
+                order_price = _first_quote_price(order_symbol)
+            order_notional_open = max(0.0, qty_open * order_price)
+            pending_buy_notional_total += order_notional_open
+            if order_symbol == symbol_up:
+                pending_buy_notional_symbol += order_notional_open
+
+    available_buying_power = max(0.0, buying_power - pending_buy_notional_total)
+    symbol_equity_after = symbol_equity_now + pending_buy_notional_symbol + (order_notional if side_lc == "buy" else -order_notional)
     if symbol_equity_after < 0:
         symbol_equity_after = 0.0
 
@@ -151,26 +214,23 @@ def evaluate_pretrade_policy(
         daily_pnl_source = "open_positions_intraday_sum"
     daily_loss_breach = equity > 0 and daily_pnl_total <= -(equity * max_daily_loss_pct)
 
-    pending_for_symbol = 0
-    if asset_class_lc == "stock":
-        for order in open_orders:
-            order_symbol = str(order.get("symbol") or "").upper().strip()
-            if not order_symbol:
-                try:
-                    order_symbol = str(rh.get_symbol_by_url(order.get("instrument")) or "").upper().strip()
-                except Exception:
-                    order_symbol = ""
-            if order_symbol == symbol_up:
-                pending_for_symbol += 1
+    add_check(
+        "account_data_required",
+        side_lc != "buy" or asset_class_lc != "stock" or account_data_available,
+        f"asset_class={asset_class_lc}, account_data_available={account_data_available}",
+    )
 
     add_check(
         "buying_power",
-        side_lc != "buy" or not account_data_available or buying_power >= order_notional,
-        f"buying_power={buying_power:.2f}, order_notional={order_notional:.2f}",
+        side_lc != "buy" or asset_class_lc != "stock" or (account_data_available and available_buying_power >= order_notional),
+        (
+            f"buying_power={buying_power:.2f}, available_buying_power={available_buying_power:.2f}, "
+            f"pending_buy_notional_total={pending_buy_notional_total:.2f}, order_notional={order_notional:.2f}"
+        ),
     )
     add_check(
         "daily_loss_limit",
-        side_lc != "buy" or not account_data_available or not daily_loss_breach,
+        side_lc != "buy" or asset_class_lc != "stock" or (account_data_available and not daily_loss_breach),
         (
             f"daily_pnl_total={daily_pnl_total:.2f}, "
             f"source={daily_pnl_source}, "
@@ -180,6 +240,7 @@ def evaluate_pretrade_policy(
     add_check(
         "order_notional_limit",
         side_lc != "buy"
+        or asset_class_lc != "stock"
         or not account_data_available
         or equity <= 0
         or order_notional <= equity * max_order_notional_pct,
@@ -191,11 +252,12 @@ def evaluate_pretrade_policy(
     add_check(
         "symbol_exposure_limit",
         side_lc != "buy"
+        or asset_class_lc != "stock"
         or not account_data_available
         or equity <= 0
         or symbol_equity_after <= equity * max_symbol_exposure_pct,
         (
-            f"symbol_equity_after={symbol_equity_after:.2f}, "
+            f"symbol_equity_after={symbol_equity_after:.2f}, pending_buy_notional_symbol={pending_buy_notional_symbol:.2f}, "
             f"max_symbol_equity={equity * max_symbol_exposure_pct:.2f}"
         ),
     )
@@ -295,6 +357,9 @@ def evaluate_pretrade_policy(
             "equity": equity,
             "equity_previous_close": equity_previous_close if equity_previous_close > 0 else None,
             "buying_power": buying_power,
+            "available_buying_power": available_buying_power,
+            "pending_buy_notional_total": pending_buy_notional_total,
+            "pending_buy_notional_symbol": pending_buy_notional_symbol,
             "intraday_pl_open_positions": intraday_pl_open_positions,
             "daily_pnl_total": daily_pnl_total,
             "daily_pnl_source": daily_pnl_source,
@@ -302,6 +367,7 @@ def evaluate_pretrade_policy(
             "symbol_equity_after": symbol_equity_after,
             "market_session": market.get("session"),
             "sentiment": sentiment_summary,
+            "hard_exclude_hit": hard_exclude_hit,
         },
         "limits": {
             "max_daily_loss_pct": max_daily_loss_pct,
@@ -310,5 +376,7 @@ def evaluate_pretrade_policy(
             "max_pending_orders_per_symbol": max_pending_orders_per_symbol,
             "sentiment_fail_closed": sentiment_fail_closed,
             "sentiment_confidence_floor": sentiment_confidence_floor,
+            "hard_exclude_enabled": enable_hard_exclude,
+            "hard_exclude_symbols": sorted(hard_exclude_symbols),
         },
     }

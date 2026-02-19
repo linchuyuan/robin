@@ -7,6 +7,7 @@ from auth import get_session
 from portfolio import list_positions
 from market_data import get_history, get_news
 from macro_news import get_macro_news
+from economic_events import get_economic_events_feed
 from orders import place_order
 from yahoo_finance import get_yf_quote, get_yf_news, get_yf_options
 from account import get_account_profile
@@ -95,6 +96,63 @@ def _validate_cancel_response(payload) -> tuple[bool, str | None]:
             return True, None
 
     return False, "Cancellation failed or returned an empty/unknown response."
+
+
+def _validate_stock_order_inputs(
+    *,
+    symbol: str,
+    qty: float,
+    side: str,
+    order_type: str,
+    price: float | None,
+    stop_price: float | None,
+    time_in_force: str,
+) -> str | None:
+    symbol_up = str(symbol).upper().strip()
+    side_lc = str(side).lower().strip()
+    order_type_lc = str(order_type).lower().strip()
+    tif_lc = str(time_in_force).lower().strip()
+
+    if not symbol_up:
+        return "symbol is required."
+    if float(qty or 0) <= 0:
+        return "quantity must be positive."
+    if side_lc not in {"buy", "sell"}:
+        return "side must be 'buy' or 'sell'."
+    if order_type_lc not in {"market", "limit", "stop_loss", "stop_limit", "trailing_stop"}:
+        return "order_type must be one of: market, limit, stop_loss, stop_limit, trailing_stop."
+    if tif_lc not in {"gfd", "gtc"}:
+        return "time_in_force must be 'gfd' or 'gtc'."
+    if order_type_lc in {"limit", "stop_limit"} and (price is None or float(price) <= 0):
+        return "price is required and must be > 0 for limit/stop_limit orders."
+    if order_type_lc in {"stop_loss", "stop_limit", "trailing_stop"} and (stop_price is None or float(stop_price) <= 0):
+        return "stop_price is required and must be > 0 for stop_loss/stop_limit/trailing_stop orders."
+    return None
+
+
+def _validate_crypto_order_inputs(
+    *,
+    symbol: str,
+    qty: float,
+    side: str,
+    order_type: str,
+    price: float | None,
+) -> str | None:
+    symbol_up = str(symbol).upper().strip()
+    side_lc = str(side).lower().strip()
+    order_type_lc = str(order_type).lower().strip()
+
+    if not symbol_up:
+        return "symbol is required."
+    if float(qty or 0) <= 0:
+        return "quantity must be positive."
+    if side_lc not in {"buy", "sell"}:
+        return "side must be 'buy' or 'sell'."
+    if order_type_lc not in {"market", "limit"}:
+        return "order_type must be 'market' or 'limit'."
+    if order_type_lc == "limit" and (price is None or float(price) <= 0):
+        return "price is required and must be > 0 for limit crypto orders."
+    return None
 
 @mcp.tool()
 def get_pending_orders() -> dict:
@@ -319,29 +377,52 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
         time_in_force: 'gfd' (good for day) or 'gtc' (good til cancelled). Default: gfd
         extended_hours: If true, allow execution in pre/after-market hours. Default: false
     """
+    symbol_up = str(symbol).upper().strip()
+    side_lc = str(side).lower().strip()
+    order_type_lc = str(order_type).lower().strip()
     try:
+        validation_error = _validate_stock_order_inputs(
+            symbol=symbol_up,
+            qty=qty,
+            side=side_lc,
+            order_type=order_type_lc,
+            price=price,
+            stop_price=stop_price,
+            time_in_force=time_in_force,
+        )
+        if validation_error:
+            return {
+                "success": False,
+                "symbol": symbol_up,
+                "side": side_lc,
+                "quantity": qty,
+                "order_type": order_type_lc,
+                "error": validation_error,
+                "result_text": validation_error,
+            }
+
         get_session()
         policy = evaluate_pretrade_policy(
-            symbol=symbol,
+            symbol=symbol_up,
             qty=qty,
-            side=side,
-            order_type=order_type,
+            side=side_lc,
+            order_type=order_type_lc,
             price=price,
             extended_hours=extended_hours,
         )
         if not policy.get("allowed"):
             return {
                 "success": False,
-                "symbol": symbol.upper(),
-                "side": side,
+                "symbol": symbol_up,
+                "side": side_lc,
                 "quantity": qty,
-                "order_type": order_type,
+                "order_type": order_type_lc,
                 "policy": policy,
                 "error": policy.get("reason"),
                 "result_text": policy.get("reason"),
             }
 
-        result = place_order(symbol.upper(), qty, side, order_type, price,
+        result = place_order(symbol_up, qty, side_lc, order_type_lc, price,
                              stop_price=stop_price, time_in_force=time_in_force,
                              extended_hours=extended_hours)
         success, api_error = _validate_order_response(result)
@@ -350,10 +431,10 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
             return {
                 "success": False,
                 "order_id": order_id,
-                "symbol": symbol.upper(),
-                "side": side,
+                "symbol": symbol_up,
+                "side": side_lc,
                 "quantity": qty,
-                "order_type": order_type,
+                "order_type": order_type_lc,
                 "details": result,
                 "policy": policy,
                 "error": api_error,
@@ -362,10 +443,10 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
         return {
             "success": True,
             "order_id": order_id,
-            "symbol": symbol.upper(),
-            "side": side,
+            "symbol": symbol_up,
+            "side": side_lc,
             "quantity": qty,
-            "order_type": order_type,
+            "order_type": order_type_lc,
             "details": result,
             "policy": policy,
             "result_text": f"Order submitted: {order_id}\nDetails: {result}",
@@ -373,7 +454,7 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
     except Exception as e:
         return {
             "success": False,
-            "symbol": symbol.upper(),
+            "symbol": symbol_up,
             "error": str(e),
             "result_text": f"Error placing order: {str(e)}",
         }
@@ -944,16 +1025,35 @@ def execute_crypto_order(symbol: str, qty: float, side: str, order_type: str = "
         order_type: 'market' or 'limit' (default: market)
         price: Limit price (required if order_type is limit)
     """
-    symbol_up = str(symbol).upper()
+    symbol_up = str(symbol).upper().strip()
     side_lc = str(side).lower()
+    order_type_lc = str(order_type).lower().strip()
     policy = None
     try:
+        validation_error = _validate_crypto_order_inputs(
+            symbol=symbol_up,
+            qty=qty,
+            side=side_lc,
+            order_type=order_type_lc,
+            price=price,
+        )
+        if validation_error:
+            return {
+                "success": False,
+                "symbol": symbol_up,
+                "side": side_lc,
+                "quantity": qty,
+                "order_type": order_type_lc,
+                "error": validation_error,
+                "result_text": validation_error,
+            }
+
         get_session()
         policy = evaluate_pretrade_policy(
             symbol=symbol_up,
             qty=qty,
             side=side_lc,
-            order_type=order_type,
+            order_type=order_type_lc,
             price=price,
             extended_hours=True,
             asset_class="crypto",
@@ -964,13 +1064,13 @@ def execute_crypto_order(symbol: str, qty: float, side: str, order_type: str = "
                 "symbol": symbol_up,
                 "side": side_lc,
                 "quantity": qty,
-                "order_type": order_type,
+                "order_type": order_type_lc,
                 "policy": policy,
                 "error": policy.get("reason"),
                 "result_text": policy.get("reason"),
             }
 
-        result = place_crypto_order(symbol_up, qty, side_lc, order_type, price)
+        result = place_crypto_order(symbol_up, qty, side_lc, order_type_lc, price)
         success, api_error = _validate_order_response(result)
         order_id = result.get("id")
         if not success:
@@ -980,7 +1080,7 @@ def execute_crypto_order(symbol: str, qty: float, side: str, order_type: str = "
                 "symbol": symbol_up,
                 "side": side_lc,
                 "quantity": qty,
-                "order_type": order_type,
+                "order_type": order_type_lc,
                 "details": result,
                 "policy": policy,
                 "error": api_error,
@@ -992,7 +1092,7 @@ def execute_crypto_order(symbol: str, qty: float, side: str, order_type: str = "
             "symbol": symbol_up,
             "side": side_lc,
             "quantity": qty,
-            "order_type": order_type,
+            "order_type": order_type_lc,
             "details": result,
             "policy": policy,
             "result_text": f"Crypto Order submitted: {order_id}\nDetails: {result}",
@@ -1363,6 +1463,71 @@ def get_macro_news_headlines(limit: int = 10, only_today: bool = False) -> dict:
         "only_today": only_today,
         "result_text": "\n".join(output),
     }
+
+
+@mcp.tool()
+def get_economic_events(
+    limit: int = 20,
+    days_ahead: int = 14,
+    countries: str = "USD",
+    min_impact: str = "High",
+    keywords: str = "",
+) -> dict:
+    """
+    Get upcoming economic calendar events (e.g., CPI, Fed meetings, Fed minutes).
+
+    Args:
+        limit: Max events to return after filtering (default: 20).
+        days_ahead: Forward window in days from now (default: 14).
+        countries: Comma-separated country codes (default: "USD").
+        min_impact: Minimum impact level: Holiday|Low|Medium|High (default: High).
+        keywords: Optional comma-separated title filters (e.g. "CPI,FOMC,Fed Minutes").
+    """
+    try:
+        payload = get_economic_events_feed(
+            limit=limit,
+            days_ahead=days_ahead,
+            countries=countries,
+            min_impact=min_impact,
+            keywords=keywords,
+        )
+        events = payload.get("events", [])
+        if not events:
+            text = (
+                "No matching economic events found in the selected window. "
+                "Try relaxing min_impact or keywords."
+            )
+            if payload.get("warning"):
+                text = f"{text}\nWarning: {payload.get('warning')}"
+            return {
+                **payload,
+                "count": 0,
+                "result_text": text,
+            }
+
+        lines = []
+        for event in events:
+            lines.append(
+                f"- [{event.get('impact')}] {event.get('datetime')} | "
+                f"{event.get('country')} | {event.get('title')} | "
+                f"forecast={event.get('forecast') or 'N/A'} | previous={event.get('previous') or 'N/A'}"
+            )
+        if payload.get("warning"):
+            lines.append("")
+            lines.append(f"Warning: {payload.get('warning')}")
+
+        return {
+            **payload,
+            "count": len(events),
+            "result_text": "\n".join(lines),
+        }
+    except Exception as e:
+        return {
+            "events": [],
+            "count": 0,
+            "error": str(e),
+            "result_text": f"Error fetching economic events: {str(e)}",
+        }
 
 @mcp.tool()
 def get_timestamp() -> dict:

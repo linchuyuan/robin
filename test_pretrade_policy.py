@@ -43,6 +43,108 @@ class TestPretradePolicy(unittest.TestCase):
     @patch.dict("os.environ", {"ROBIN_ENABLE_SENTIMENT_GUARDRAIL": "0"}, clear=False)
     @patch("pretrade_policy.get_market_status", return_value={"session": "regular"})
     @patch("pretrade_policy.rh.get_all_open_stock_orders", return_value=[])
+    @patch("pretrade_policy.list_positions", return_value=[])
+    @patch("pretrade_policy.get_account_profile", return_value={})
+    @patch("pretrade_policy._first_quote_price", return_value=10.0)
+    def test_buy_blocks_when_account_data_unavailable(
+        self,
+        _mock_quote,
+        _mock_account,
+        _mock_positions,
+        _mock_orders,
+        _mock_market,
+    ):
+        result = evaluate_pretrade_policy(
+            symbol="AAPL",
+            qty=1,
+            side="buy",
+            order_type="market",
+            price=None,
+            extended_hours=False,
+        )
+        self.assertFalse(result.get("allowed"))
+        self.assertEqual(result.get("blocked_by"), "account_data_required")
+
+    @patch.dict("os.environ", {"ROBIN_ENABLE_SENTIMENT_GUARDRAIL": "0"}, clear=False)
+    @patch("pretrade_policy.get_market_status", return_value={"session": "regular"})
+    @patch(
+        "pretrade_policy.rh.get_all_open_stock_orders",
+        return_value=[{"symbol": "AAPL", "side": "buy", "quantity": "4", "price": "20"}],
+    )
+    @patch("pretrade_policy.list_positions", return_value=[])
+    @patch(
+        "pretrade_policy.get_account_profile",
+        return_value={
+            "equity": 1000.0,
+            "equity_previous_close": 1000.0,
+            "buying_power": 100.0,
+            "market_value": 0.0,
+        },
+    )
+    @patch("pretrade_policy._first_quote_price", return_value=20.0)
+    def test_buying_power_accounts_for_pending_buy_notional(
+        self,
+        _mock_quote,
+        _mock_account,
+        _mock_positions,
+        _mock_orders,
+        _mock_market,
+    ):
+        result = evaluate_pretrade_policy(
+            symbol="MSFT",
+            qty=2,
+            side="buy",
+            order_type="limit",
+            price=20.0,
+            extended_hours=False,
+        )
+        self.assertFalse(result.get("allowed"))
+        self.assertEqual(result.get("blocked_by"), "buying_power")
+        checks = result.get("checks", [])
+        buying_power_check = next((item for item in checks if item.get("name") == "buying_power"), {})
+        self.assertIn("pending_buy_notional_total=80.00", buying_power_check.get("detail", ""))
+
+    @patch.dict("os.environ", {"ROBIN_ENABLE_SENTIMENT_GUARDRAIL": "0"}, clear=False)
+    @patch("pretrade_policy.get_market_status", return_value={"session": "regular"})
+    @patch("pretrade_policy.rh.get_all_open_stock_orders", return_value=[])
+    @patch("pretrade_policy.list_positions", return_value=[])
+    @patch(
+        "pretrade_policy.get_account_profile",
+        return_value={
+            "equity": 1000.0,
+            "equity_previous_close": 1000.0,
+            "buying_power": 1000.0,
+            "market_value": 0.0,
+        },
+    )
+    @patch("pretrade_policy._first_quote_price", return_value=10.0)
+    def test_hard_exclude_blocks_sell_orders(
+        self,
+        _mock_quote,
+        _mock_account,
+        _mock_positions,
+        _mock_orders,
+        _mock_market,
+    ):
+        result = evaluate_pretrade_policy(
+            symbol="CEG",
+            qty=1,
+            side="sell",
+            order_type="market",
+            price=None,
+            extended_hours=False,
+        )
+        self.assertFalse(result.get("allowed"))
+        self.assertEqual(result.get("blocked_by"), "hard_exclude_list")
+        checks = result.get("checks", [])
+        hard_exclude_check = next((item for item in checks if item.get("name") == "hard_exclude_list"), {})
+        self.assertEqual(hard_exclude_check.get("status"), "fail")
+        metrics = result.get("metrics", {})
+        self.assertTrue(metrics.get("hard_exclude_hit"))
+
+    @patch.dict("os.environ", {"ROBIN_ENABLE_SENTIMENT_GUARDRAIL": "0"}, clear=False)
+    @patch("pretrade_policy.get_market_status", return_value={"session": "regular"})
+    @patch("pretrade_policy.rh.get_all_open_stock_orders", return_value=[])
     @patch("pretrade_policy.list_positions", return_value=[{"symbol": "AAPL", "intraday_profit_loss": -5.0, "equity": 200.0}])
     @patch(
         "pretrade_policy.get_account_profile",

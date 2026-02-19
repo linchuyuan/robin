@@ -139,6 +139,7 @@ This keeps outputs consistent and easy for agents to consume (e.g. via `mcporter
 - `get_fundamentals`: Get P/E, Market Cap, and other stats (Robinhood).
 - `get_market_sentiment`: Get Fear & Greed Index and VIX.
 - `get_macro_news_headlines`: Get aggregated latest macroeconomic news. Supports `limit` and `only_today`.
+- `get_economic_events`: Get upcoming macro calendar events (e.g., CPI, FOMC/Fed minutes/meetings, PCE, GDP, labor releases) with filters for countries, impact, and keywords.
 - `get_market_session`: Get current market session status (pre-market/regular/after-hours/closed), schedule, holidays, and next open/close.
 - `get_earnings_calendar`: Get upcoming earnings dates for one or more symbols (comma-separated).
 - `get_reddit_posts`: Query recent Reddit posts across selected subreddits.

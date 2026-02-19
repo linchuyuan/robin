@@ -110,6 +110,17 @@ async def test_server() -> None:
             if "error" not in sector:
                 _assert("sectors" in sector and isinstance(sector["sectors"], list), "get_sector_performance_tool: sectors must be list")
 
+            print("Testing get_economic_events...")
+            econ_raw = await session.call_tool(
+                "get_economic_events",
+                arguments={"limit": 5, "days_ahead": 14, "countries": "USD", "min_impact": "High"},
+            )
+            econ = _extract_payload(econ_raw)
+            _assert_common_contract(econ, "get_economic_events")
+            _assert("events" in econ and isinstance(econ["events"], list), "get_economic_events: events must be list")
+            if "error" not in econ:
+                _assert("count" in econ, "get_economic_events: missing count")
+
             print("Testing get_symbol_peers...")
             peers_raw = await session.call_tool("get_symbol_peers", arguments={"symbol": "MSFT"})
             peers = _extract_payload(peers_raw)

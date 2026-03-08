@@ -115,6 +115,8 @@ def _validate_stock_order_inputs(
 
     if not symbol_up:
         return "symbol is required."
+    if len(symbol_up) > 5 or not symbol_up.isalpha():
+        return "symbol must be 1-5 letters (e.g. AAPL, SPY)."
     if float(qty or 0) <= 0:
         return "quantity must be positive."
     if side_lc not in {"buy", "sell"}:
@@ -310,21 +312,44 @@ def get_stock_news(symbol: str) -> dict:
             "result_text": f"Error fetching news: {str(e)}",
         }
 
+def _validate_symbol(symbol: str) -> str | None:
+    """Return an error message if symbol is invalid (1-5 uppercase letters); else None."""
+    s = (symbol or "").strip().upper()
+    if not s:
+        return "symbol is required."
+    if len(s) > 5:
+        return "symbol must be 1-5 characters."
+    if not s.isalpha():
+        return "symbol must contain only letters (A-Z)."
+    return None
+
+
 @mcp.tool()
 def get_stock_history(symbol: str, span: str = "week", interval: str = "day") -> dict:
     """Get historical OHLCV price data for a stock.
 
-    NOTE: This now returns a structured JSON payload with a `candles` array.
-    A CSV string is also included for backwards compatibility.
+    Returns a structured JSON payload with a `candles` array and a `csv` string.
+    For 20-day (or ~1 month) return calculations (e.g. SPY vs account), use span=\"month\" and interval=\"day\".
 
     Args:
-        symbol: Stock ticker (e.g. AAPL)
+        symbol: Stock ticker (e.g. AAPL, SPY)
         span: Time span (day, week, month, 3month, year, 5year)
         interval: Data interval (5minute, 10minute, hour, day, week)
     """
+    sym_err = _validate_symbol(symbol)
+    if sym_err:
+        return {
+            "symbol": str(symbol).upper() if symbol else "",
+            "span": span,
+            "interval": interval,
+            "candles": [],
+            "csv": "",
+            "error": sym_err,
+            "result_text": sym_err,
+        }
     try:
         get_session()
-        sym = symbol.upper()
+        sym = symbol.upper().strip()
         data = get_history(sym, interval, span) or []
         if not data:
             return {
@@ -951,7 +976,11 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
 
 @mcp.tool()
 def get_account_info() -> dict:
-    """Get account buying power and cash info. Returns JSON with profile and result_text for LLM."""
+    """Get account buying power, cash, and equity. Returns JSON with profile and result_text for LLM.
+
+    Profile includes equity_previous_close for daily PnL and circuit-breaker logic (e.g. compare
+    equity to equity_previous_close for same-day drawdown). Total Equity = profile.equity.
+    """
     try:
         get_session()
         profile = get_account_profile()
@@ -964,6 +993,8 @@ def get_account_info() -> dict:
             f"Total Equity: {profile.get('equity')}",
             f"Market Value: {profile.get('market_value')}",
         ]
+        if profile.get("equity_previous_close") is not None:
+            lines.append(f"Equity Previous Close: {profile.get('equity_previous_close')}")
         return {
             "profile": profile,
             "result_text": "\n".join(lines),
@@ -1386,11 +1417,33 @@ def get_earnings_calendar(symbols: str) -> dict:
         "result_text": "\n".join(lines),
     }
 
+def _classify_regime(fg: dict | None, vix: dict | None) -> str:
+    """Classify risk_off vs risk_on for regime-conditional logic (e.g. score thresholds)."""
+    if not isinstance(fg, dict) or "error" in fg:
+        return "unknown"
+    rating = (fg.get("rating") or "").strip().lower()
+    vix_price = None
+    if isinstance(vix, dict) and "error" not in vix and vix.get("price") is not None:
+        try:
+            vix_price = float(vix["price"])
+        except (TypeError, ValueError):
+            pass
+    risk_off_ratings = {"extreme fear", "fear"}
+    vix_elevated = vix_price is not None and vix_price > 20
+    if rating in risk_off_ratings or vix_elevated:
+        return "risk_off"
+    if rating in {"greed", "extreme greed", "neutral"}:
+        return "risk_on"
+    return "neutral"
+
+
 @mcp.tool()
 def get_market_sentiment() -> dict:
     """Get market sentiment (Fear & Greed Index and VIX).
 
-    NOTE: Returns structured JSON for machine parsing, plus a `result_text` string.
+    Returns structured JSON for machine parsing, plus a `result_text` string.
+    Use `fear_greed_score` (0-100) and `regime_classification` (risk_off | risk_on | neutral)
+    for regime-conditional logic (e.g. portfolio-agent score thresholds).
     """
     fg = get_fear_and_greed()
     vix = get_vix()
@@ -1415,23 +1468,31 @@ def get_market_sentiment() -> dict:
 
     output.append("")
 
+    vix_value = None
     if isinstance(vix, dict) and "error" not in vix:
         output.append("--- VIX (Volatility Index) ---")
         output.append(f"Price: {vix.get('price')}")
+        try:
+            vix_value = float(vix.get('price')) if vix.get('price') is not None else None
+        except (TypeError, ValueError):
+            pass
         output.append(f"Change: {vix.get('change', 0):+.2f} ({vix.get('percent_change', 0):+.2f}%)")
         output.append(f"Day Range: {vix.get('day_low')} - {vix.get('day_high')}")
         output.append(f"52W Range: {vix.get('52_week_low')} - {vix.get('52_week_high')}")
     else:
         output.append(f"VIX: Error ({vix.get('error') if isinstance(vix, dict) else vix})")
 
-    regime = None
-    if isinstance(fg, dict) and 'rating' in fg:
-        regime = fg.get('rating')
+    regime_label = fg.get("rating") if isinstance(fg, dict) and "error" not in fg else None
+    fear_greed_score = float(fg.get("score", 0)) if isinstance(fg, dict) and "error" not in fg else None
+    regime_classification = _classify_regime(fg if isinstance(fg, dict) and "error" not in fg else None, vix)
 
     return {
         "fear_and_greed": fg,
         "vix": vix,
-        "regime": regime,
+        "regime": regime_label,
+        "fear_greed_score": fear_greed_score,
+        "vix_value": vix_value,
+        "regime_classification": regime_classification,
         "result_text": "\n".join(output),
     }
 

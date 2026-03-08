@@ -82,7 +82,13 @@ All MCP tools return **JSON** (not plain text). Each response includes:
 - For mutating tools (for example `execute_order`, `execute_crypto_order`, `cancel_order`), a **`success`** boolean is included.
 - `execute_order` responses include a **`policy`** object summarizing pre-trade checks.
 
-This keeps outputs consistent and easy for agents to consume (e.g. via `mcporter call … --output json`).
+This keeps outputs consistent and easy for agents to consume (e.g. via `mcporter call … --output json`). Symbol parameters are validated (1–5 uppercase letters) for stock history and order tools; invalid symbols return a clear `error` without calling the broker.
+
+### End-to-end with skills (watchlist → portfolio-agent → daily-review)
+The MCP is the data and execution layer for the quant trading flow: **watchlist** refreshes ideas into `memory/watchlist.json`; **portfolio-agent** reads watchlist, params, and learning-state, passes regime and pre-trade checks, and calls MCP for quotes, sentiment, history, and orders; **daily-review** uses order history and account/equity snapshots to label outcomes and update learning-state. Key MCP hooks:
+- **`get_market_sentiment`**: returns `fear_greed_score` (0–100), `vix_value`, and **`regime_classification`** (`risk_off` | `risk_on` | `neutral`) for regime-conditional score thresholds.
+- **`get_account_info`**: profile includes **`equity_previous_close`** for daily drawdown and circuit-breaker logic.
+- **`get_stock_history(symbol="SPY", span="month", interval="day")`**: use for 20-day SPY return (e.g. SPY underperformance kill-switch).
 
 ### Usage
 1. Configure your MCP client (e.g., Claude Desktop, MCPorter) to point to the server.
@@ -187,7 +193,7 @@ Useful env vars: `PYTHON_EXE`, `ROBIN_MCP_HOST`, `ROBIN_MCP_PORT`, `WHATSAPP_DM_
 - Endpoint priority note: Yahoo-first is only for option-chain fetches; for other categories, prefer Robinhood endpoints.
 - `get_crypto_price`: Get crypto quote.
 - `get_fundamentals`: Get P/E, Market Cap, and other stats (Robinhood).
-- `get_market_sentiment`: Get Fear & Greed Index and VIX.
+- `get_market_sentiment`: Get Fear & Greed Index and VIX; returns `fear_greed_score`, `vix_value`, and `regime_classification` (risk_off | risk_on | neutral) for agent regime logic.
 - `get_macro_news_headlines`: Get aggregated latest macroeconomic news. Supports `limit` and `only_today`.
 - `get_economic_events`: Get upcoming macro calendar events (e.g., CPI, FOMC/Fed minutes/meetings, PCE, GDP, labor releases) with filters for countries, impact, and keywords.
 - `get_market_session`: Get current market session status (pre-market/regular/after-hours/closed), schedule, holidays, and next open/close.

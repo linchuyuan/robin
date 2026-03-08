@@ -119,6 +119,56 @@ This keeps outputs consistent and easy for agents to consume (e.g. via `mcporter
    ```
    (Only needed if using HTTP transport or manual testing)
 
+### Deploying to another compute node
+
+**Packaging (on your dev/source machine)**
+
+1. From the `robin` repo root, build the bundle (set `SKILLS_DIR` to your skills tree, e.g. `clawd/skills`):
+   ```bash
+   SKILLS_DIR=/path/to/clawd/skills ./scripts/build_openclaw_bundle.sh
+   ```
+2. Copy the created tarball to the new server, e.g.:
+   ```bash
+   scp dist/openclaw-deploy-YYYYMMDD-HHMMSS.tar.gz user@new-server:/tmp/
+   ```
+
+**Deploy (on the new server)**
+
+3. Extract the tarball once (e.g. to `/tmp`) so you can run the configure script at the bundle root; the script will install into `/opt/openclaw` (or your chosen install root).
+4. Run the configure script:
+   ```bash
+   tar -xzf /tmp/openclaw-deploy-YYYYMMDD-HHMMSS.tar.gz -C /tmp
+   chmod +x /tmp/openclaw_bundle/configure_openclaw_node.sh
+   /tmp/openclaw_bundle/configure_openclaw_node.sh /tmp/openclaw-deploy-YYYYMMDD-HHMMSS.tar.gz /opt/openclaw
+   ```
+   Or from a `robin` repo checkout: `./scripts/configure_openclaw_node.sh /tmp/openclaw-deploy-*.tar.gz /opt/openclaw`
+   When prompted, complete Codex OAuth (browser) and WhatsApp channel login (QR or pairing).
+5. (Optional) Set env vars before step 4 if you want a cron job or different WhatsApp/auth behavior, e.g.:
+   ```bash
+   OPENCLAW_CRON_NAME="Morning brief" \
+   OPENCLAW_CRON_EXPR="0 7 * * *" \
+   OPENCLAW_CRON_TZ="America/Los_Angeles" \
+   OPENCLAW_CRON_MESSAGE="Summarize overnight updates and portfolio risk." \
+   ./scripts/configure_openclaw_node.sh /tmp/openclaw-deploy-*.tar.gz /opt/openclaw
+   ```
+6. Start the stack (Robin MCP + OpenClaw gateway):
+   ```bash
+   /opt/openclaw/start_openclaw_stack.sh
+   ```
+
+Useful env vars: `PYTHON_EXE`, `ROBIN_MCP_HOST`, `ROBIN_MCP_PORT`, `WHATSAPP_DM_POLICY`, `WHATSAPP_ALLOW_FROM`, `RUN_CODEX_OAUTH`, `RUN_WHATSAPP_LOGIN`.
+
+**What the configure script does:**
+
+- installs `openclaw@latest` via npm
+- installs `mcporter@latest` (required by the `robinhood` skill)
+- untars the Robin MCP server bundle
+- moves the packaged skills into `~/.openclaw/workspace/skills`
+- writes `~/.openclaw/workspace/config/mcporter.json`
+- writes `~/.openclaw/openclaw.json` with WhatsApp channel policy
+- runs OpenClaw Codex OAuth login and WhatsApp login (interactive unless disabled)
+- optionally registers an OpenClaw cron job if `OPENCLAW_CRON_*` variables are provided
+
 ### Tools Available
 - `get_portfolio`: List open positions with detailed P/L metrics.
 - `get_account_info`: View buying power, cash, and total equity.

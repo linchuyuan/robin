@@ -78,6 +78,17 @@ fi
 require_cmd tar
 require_cmd "$PYTHON_EXE"
 
+# Ensure python3-venv is available (Debian/Ubuntu)
+if ! "$PYTHON_EXE" -m ensurepip --version >/dev/null 2>&1; then
+  PY_VER=$("$PYTHON_EXE" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "3")
+  echo "python3-venv not available. Installing python${PY_VER}-venv..."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get install -y "python${PY_VER}-venv" || apt-get install -y python3-venv
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y python3-virtualenv || true
+  fi
+fi
+
 MIN_NODE_MAJOR=22
 install_or_upgrade_node() {
   current_major=0

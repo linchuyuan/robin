@@ -1,9 +1,15 @@
 #!/usr/bin/env sh
 # Configure OpenClaw + Robin MCP on a compute node (Linux/macOS).
+# One-click install: handles Node.js, Python venv, npm packages, bundle
+# extraction, config files, WhatsApp login, and Codex OAuth.
+#
 # Usage:
 #   ./configure_openclaw_node.sh /path/to/openclaw-deploy-YYYYMMDD-HHMMSS.tar.gz
 #   OPENCLAW_CRON_EXPR="0 7 * * *" OPENCLAW_CRON_MESSAGE="Morning brief" \
 #     ./configure_openclaw_node.sh /path/to/bundle.tar.gz /opt/openclaw
+#
+# Safe to pipe through tr for CRLF removal:
+#   tr -d '\r' < configure_openclaw_node.sh | bash -s -- /path/to/bundle.tar.gz
 
 set -e
 
@@ -33,6 +39,8 @@ OPENCLAW_CRON_TO="${OPENCLAW_CRON_TO:-}"
 START_GATEWAY_FOR_CRON="${START_GATEWAY_FOR_CRON:-1}"
 
 export OPENCLAW_STATE_DIR
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
 
 json_array_from_csv() {
   input="$1"
@@ -70,15 +78,70 @@ require_cmd() {
   fi
 }
 
+# Resolve a TTY for interactive commands (works even when piped via tr|bash).
+get_tty() {
+  if [ -e /dev/tty ]; then
+    echo /dev/tty
+  else
+    echo /dev/null
+  fi
+}
+
+# Run an interactive command with a timeout so it can't hang forever.
+# Usage: run_interactive <timeout_secs> <command> [args...]
+run_interactive() {
+  _timeout="$1"; shift
+  _tty=$(get_tty)
+  if [ "$_tty" = "/dev/null" ]; then
+    echo "  Skipped (no terminal available). Run manually: $*"
+    return 0
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$_timeout" "$@" <"$_tty" || {
+      _rc=$?
+      if [ "$_rc" -eq 124 ]; then
+        echo "  Timed out after ${_timeout}s (auth may have completed). If needed, run manually: $*"
+      else
+        echo "  Exited with code $_rc. Run manually if needed: $*"
+      fi
+      return 0
+    }
+  else
+    "$@" <"$_tty" || {
+      echo "  Exited with error. Run manually if needed: $*"
+      return 0
+    }
+  fi
+}
+
+# ── Preflight checks ────────────────────────────────────────────────────────
+
 if [ ! -f "$BUNDLE_PATH" ]; then
   echo "Bundle file not found: $BUNDLE_PATH" >&2
   exit 1
 fi
 
 require_cmd tar
+require_cmd curl
+
+# ── 1. Python + venv ────────────────────────────────────────────────────────
+
+if ! command -v "$PYTHON_EXE" >/dev/null 2>&1; then
+  echo "Python3 not found. Installing..."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -qq && apt-get install -y python3 python3-pip
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y python3 python3-pip
+  elif command -v brew >/dev/null 2>&1; then
+    brew install python3
+  else
+    echo "Cannot auto-install Python3. Please install manually and rerun." >&2
+    exit 1
+  fi
+  hash -r
+fi
 require_cmd "$PYTHON_EXE"
 
-# Ensure python3-venv is available (Debian/Ubuntu)
 if ! "$PYTHON_EXE" -m ensurepip --version >/dev/null 2>&1; then
   PY_VER=$("$PYTHON_EXE" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "3")
   echo "python3-venv not available. Installing python${PY_VER}-venv..."
@@ -89,35 +152,35 @@ if ! "$PYTHON_EXE" -m ensurepip --version >/dev/null 2>&1; then
   fi
 fi
 
-MIN_NODE_MAJOR=22
-install_or_upgrade_node() {
-  current_major=0
-  if command -v node >/dev/null 2>&1; then
-    current_major=$(node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1)
-  fi
-  if [ "$current_major" -lt "$MIN_NODE_MAJOR" ] 2>/dev/null; then
-    echo "Node.js v${MIN_NODE_MAJOR}+ required (current: ${current_major:-none}). Installing..."
-    if command -v apt-get >/dev/null 2>&1; then
-      curl -fsSL "https://deb.nodesource.com/setup_${MIN_NODE_MAJOR}.x" | bash -
-      apt-get install -y nodejs
-    elif command -v yum >/dev/null 2>&1; then
-      curl -fsSL "https://rpm.nodesource.com/setup_${MIN_NODE_MAJOR}.x" | bash -
-      yum install -y nodejs
-    elif command -v brew >/dev/null 2>&1; then
-      brew install "node@${MIN_NODE_MAJOR}"
-    else
-      echo "Cannot auto-install Node.js ${MIN_NODE_MAJOR}+. Please install manually and rerun." >&2
-      exit 1
-    fi
-    hash -r
-    echo "Node.js $(node -v) installed."
-  else
-    echo "Node.js v${current_major} OK (>= ${MIN_NODE_MAJOR})."
-  fi
-}
+# ── 2. Node.js >= 22 ────────────────────────────────────────────────────────
 
-install_or_upgrade_node
+MIN_NODE_MAJOR=22
+current_node_major=0
+if command -v node >/dev/null 2>&1; then
+  current_node_major=$(node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1)
+fi
+if [ "$current_node_major" -lt "$MIN_NODE_MAJOR" ] 2>/dev/null; then
+  echo "Node.js v${MIN_NODE_MAJOR}+ required (current: ${current_node_major:-none}). Installing..."
+  if command -v apt-get >/dev/null 2>&1; then
+    curl -fsSL "https://deb.nodesource.com/setup_${MIN_NODE_MAJOR}.x" | bash -
+    apt-get install -y nodejs
+  elif command -v yum >/dev/null 2>&1; then
+    curl -fsSL "https://rpm.nodesource.com/setup_${MIN_NODE_MAJOR}.x" | bash -
+    yum install -y nodejs
+  elif command -v brew >/dev/null 2>&1; then
+    brew install "node@${MIN_NODE_MAJOR}"
+  else
+    echo "Cannot auto-install Node.js ${MIN_NODE_MAJOR}+. Please install manually and rerun." >&2
+    exit 1
+  fi
+  hash -r
+  echo "Node.js $(node -v) installed."
+else
+  echo "Node.js v${current_node_major} OK (>= ${MIN_NODE_MAJOR})."
+fi
 require_cmd npm
+
+# ── 3. npm packages ─────────────────────────────────────────────────────────
 
 echo "Installing OpenClaw..."
 npm install -g openclaw@latest
@@ -136,6 +199,8 @@ require_cmd openclaw
 if [ "$INSTALL_MCPORTER" = "1" ]; then
   require_cmd mcporter
 fi
+
+# ── 4. Extract bundle ───────────────────────────────────────────────────────
 
 mkdir -p "$INSTALL_ROOT" "$OPENCLAW_STATE_DIR" "$OPENCLAW_WORKSPACE"
 if [ -d "$INSTALL_ROOT/openclaw_bundle" ]; then
@@ -163,6 +228,8 @@ if [ ! -d "$SKILLS_SRC" ]; then
   exit 1
 fi
 
+# ── 5. Python venv + deps ───────────────────────────────────────────────────
+
 VENV_PATH="$ROBIN_ROOT/.venv"
 echo "Creating Robin MCP virtual environment..."
 "$PYTHON_EXE" -m venv "$VENV_PATH"
@@ -172,6 +239,8 @@ echo "Installing Robin MCP Python dependencies..."
 "$VENV_PYTHON" -m pip install --upgrade pip
 "$VENV_PYTHON" -m pip install -r "$ROBIN_ROOT/requirements.txt"
 
+# ── 6. Skills ────────────────────────────────────────────────────────────────
+
 if [ -d "$WORKSPACE_SKILLS_DIR" ]; then
   workspace_backup="$WORKSPACE_SKILLS_DIR.bak.$(date +%Y%m%d-%H%M%S)"
   echo "Backing up existing OpenClaw workspace skills to $workspace_backup"
@@ -179,6 +248,8 @@ if [ -d "$WORKSPACE_SKILLS_DIR" ]; then
 fi
 echo "Moving bundled skills into OpenClaw workspace..."
 mv "$SKILLS_SRC" "$WORKSPACE_SKILLS_DIR"
+
+# ── 7. Config files ─────────────────────────────────────────────────────────
 
 mkdir -p "$WORKSPACE_CONFIG_DIR"
 MCPORTER_CONFIG_PATH="$WORKSPACE_CONFIG_DIR/mcporter.json"
@@ -217,6 +288,8 @@ cat > "$OPENCLAW_CONFIG_PATH" <<EOF
 }
 EOF
 
+# ── 8. Start scripts ────────────────────────────────────────────────────────
+
 ROBIN_START_SCRIPT="$ROBIN_ROOT/start_mcp.sh"
 cat > "$ROBIN_START_SCRIPT" <<EOF
 #!/usr/bin/env sh
@@ -237,6 +310,8 @@ echo \$! > "$OPENCLAW_STATE_DIR/robin-mcp.pid"
 exec openclaw gateway "\$@"
 EOF
 chmod +x "$STACK_START_SCRIPT"
+
+# ── 9. Cron (optional) ──────────────────────────────────────────────────────
 
 if [ -n "$OPENCLAW_CRON_EXPR" ] && [ -n "$OPENCLAW_CRON_MESSAGE" ] && [ -n "$OPENCLAW_CRON_NAME" ]; then
   if [ "$START_GATEWAY_FOR_CRON" = "1" ]; then
@@ -265,19 +340,25 @@ if [ -n "$OPENCLAW_CRON_EXPR" ] && [ -n "$OPENCLAW_CRON_MESSAGE" ] && [ -n "$OPE
   "$@"
 fi
 
+# ── 10. WhatsApp + Codex OAuth (interactive, at the end) ────────────────────
+
 echo ""
 echo "=== Setup: WhatsApp and Codex OAuth ==="
 if [ "$RUN_WHATSAPP_LOGIN" = "1" ]; then
-  echo "Link your WhatsApp account (QR or pairing)..."
-  openclaw channels login --channel whatsapp </dev/tty || echo "WhatsApp login skipped (no tty or cancelled). Run manually: openclaw channels login --channel whatsapp"
+  echo "Linking WhatsApp account (QR or pairing)..."
+  run_interactive 120 openclaw channels login --channel whatsapp
 fi
 if [ "$RUN_CODEX_OAUTH" = "1" ]; then
-  echo "Sign in with OpenAI Codex (browser OAuth)..."
-  openclaw models auth login --provider openai-codex </dev/tty || echo "Codex OAuth skipped (no tty or cancelled). Run manually: openclaw models auth login --provider openai-codex"
+  echo "Signing in with OpenAI Codex (browser OAuth)..."
+  run_interactive 120 openclaw models auth login --provider openai-codex
 fi
 
+# ── Done ─────────────────────────────────────────────────────────────────────
+
 echo ""
-echo "OpenClaw deployment configured."
+echo "============================================"
+echo "  OpenClaw deployment configured."
+echo "============================================"
 echo "Bundle root:        $BUNDLE_ROOT"
 echo "Robin root:         $ROBIN_ROOT"
 echo "OpenClaw workspace: $OPENCLAW_WORKSPACE"

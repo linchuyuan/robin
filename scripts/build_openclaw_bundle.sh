@@ -1,4 +1,4 @@
-#!/usr/bin/env sh
+#!/bin/bash
 # Build OpenClaw deployment tarball (Linux/macOS).
 # Usage:
 #   ./build_openclaw_bundle.sh
@@ -48,7 +48,8 @@ echo "Adding skills..."
 
 if [ -f "$SCRIPT_DIR/configure_openclaw_node.sh" ]; then
   echo "Adding configure script to bundle root..."
-  cp "$SCRIPT_DIR/configure_openclaw_node.sh" "$STAGING/openclaw_bundle/"
+  tr -d '\r' < "$SCRIPT_DIR/configure_openclaw_node.sh" > "$STAGING/openclaw_bundle/configure_openclaw_node.sh"
+  chmod +x "$STAGING/openclaw_bundle/configure_openclaw_node.sh"
 fi
 
 echo "Creating tarball..."

@@ -76,8 +76,37 @@ if [ ! -f "$BUNDLE_PATH" ]; then
 fi
 
 require_cmd tar
-require_cmd npm
 require_cmd "$PYTHON_EXE"
+
+MIN_NODE_MAJOR=22
+install_or_upgrade_node() {
+  current_major=0
+  if command -v node >/dev/null 2>&1; then
+    current_major=$(node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1)
+  fi
+  if [ "$current_major" -lt "$MIN_NODE_MAJOR" ] 2>/dev/null; then
+    echo "Node.js v${MIN_NODE_MAJOR}+ required (current: ${current_major:-none}). Installing..."
+    if command -v apt-get >/dev/null 2>&1; then
+      curl -fsSL "https://deb.nodesource.com/setup_${MIN_NODE_MAJOR}.x" | bash -
+      apt-get install -y nodejs
+    elif command -v yum >/dev/null 2>&1; then
+      curl -fsSL "https://rpm.nodesource.com/setup_${MIN_NODE_MAJOR}.x" | bash -
+      yum install -y nodejs
+    elif command -v brew >/dev/null 2>&1; then
+      brew install "node@${MIN_NODE_MAJOR}"
+    else
+      echo "Cannot auto-install Node.js ${MIN_NODE_MAJOR}+. Please install manually and rerun." >&2
+      exit 1
+    fi
+    hash -r
+    echo "Node.js $(node -v) installed."
+  else
+    echo "Node.js v${current_major} OK (>= ${MIN_NODE_MAJOR})."
+  fi
+}
+
+install_or_upgrade_node
+require_cmd npm
 
 echo "Installing OpenClaw..."
 npm install -g openclaw@latest
@@ -229,11 +258,11 @@ echo ""
 echo "=== Setup: WhatsApp and Codex OAuth ==="
 if [ "$RUN_WHATSAPP_LOGIN" = "1" ]; then
   echo "Link your WhatsApp account (QR or pairing)..."
-  openclaw channels login --channel whatsapp
+  openclaw channels login --channel whatsapp </dev/tty || echo "WhatsApp login skipped (no tty or cancelled). Run manually: openclaw channels login --channel whatsapp"
 fi
 if [ "$RUN_CODEX_OAUTH" = "1" ]; then
   echo "Sign in with OpenAI Codex (browser OAuth)..."
-  openclaw models auth login --provider openai-codex
+  openclaw models auth login --provider openai-codex </dev/tty || echo "Codex OAuth skipped (no tty or cancelled). Run manually: openclaw models auth login --provider openai-codex"
 fi
 
 echo ""

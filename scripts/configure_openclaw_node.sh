@@ -215,8 +215,18 @@ tar -xzf "$BUNDLE_PATH" -C "$INSTALL_ROOT"
 BUNDLE_ROOT="$INSTALL_ROOT/openclaw_bundle"
 ROBIN_ROOT="$BUNDLE_ROOT/robin"
 SKILLS_SRC="$BUNDLE_ROOT/skills"
-WORKSPACE_SKILLS_DIR="$OPENCLAW_WORKSPACE/skills"
 WORKSPACE_CONFIG_DIR="$OPENCLAW_WORKSPACE/config"
+
+# OpenClaw discovers skills from the global npm skills dir, not ~/.openclaw/workspace/skills.
+OPENCLAW_GLOBAL_SKILLS_DIR="${NPM_PREFIX}/lib/node_modules/openclaw/skills"
+if [ ! -d "$OPENCLAW_GLOBAL_SKILLS_DIR" ]; then
+  # Fallback: try to find it
+  OPENCLAW_GLOBAL_SKILLS_DIR="$(node -e "console.log(require('path').join(require.resolve('openclaw/package.json'),'..','skills'))" 2>/dev/null || true)"
+fi
+if [ ! -d "$OPENCLAW_GLOBAL_SKILLS_DIR" ]; then
+  echo "Warning: Could not find OpenClaw global skills directory. Skills will be placed in $OPENCLAW_WORKSPACE/skills as fallback." >&2
+  OPENCLAW_GLOBAL_SKILLS_DIR="$OPENCLAW_WORKSPACE/skills"
+fi
 ROBIN_MCP_BASE_URL="http://$ROBIN_MCP_HOST:$ROBIN_MCP_PORT$ROBIN_MCP_PATH"
 
 if [ ! -d "$ROBIN_ROOT" ]; then
@@ -239,15 +249,24 @@ echo "Installing Robin MCP Python dependencies..."
 "$VENV_PYTHON" -m pip install --upgrade pip
 "$VENV_PYTHON" -m pip install -r "$ROBIN_ROOT/requirements.txt"
 
-# ── 6. Skills ────────────────────────────────────────────────────────────────
+# ── 6. Skills (install into OpenClaw's global npm skills dir) ────────────────
 
-if [ -d "$WORKSPACE_SKILLS_DIR" ]; then
-  workspace_backup="$WORKSPACE_SKILLS_DIR.bak.$(date +%Y%m%d-%H%M%S)"
-  echo "Backing up existing OpenClaw workspace skills to $workspace_backup"
-  mv "$WORKSPACE_SKILLS_DIR" "$workspace_backup"
+echo "Installing bundled skills into $OPENCLAW_GLOBAL_SKILLS_DIR ..."
+if [ -d "$SKILLS_SRC" ]; then
+  for skill_dir in "$SKILLS_SRC"/*/; do
+    skill_name="$(basename "$skill_dir")"
+    target="$OPENCLAW_GLOBAL_SKILLS_DIR/$skill_name"
+    if [ -d "$target" ]; then
+      echo "  Updating: $skill_name"
+      rm -rf "$target"
+    else
+      echo "  Adding:   $skill_name"
+    fi
+    cp -r "$skill_dir" "$target"
+  done
+else
+  echo "Warning: No skills directory in bundle." >&2
 fi
-echo "Moving bundled skills into OpenClaw workspace..."
-mv "$SKILLS_SRC" "$WORKSPACE_SKILLS_DIR"
 
 # ── 7. Config files ─────────────────────────────────────────────────────────
 
@@ -362,7 +381,7 @@ echo "============================================"
 echo "Bundle root:        $BUNDLE_ROOT"
 echo "Robin root:         $ROBIN_ROOT"
 echo "OpenClaw workspace: $OPENCLAW_WORKSPACE"
-echo "Skills dir:         $WORKSPACE_SKILLS_DIR"
+echo "Skills dir:         $OPENCLAW_GLOBAL_SKILLS_DIR"
 echo "OpenClaw config:    $OPENCLAW_CONFIG_PATH"
 echo "mcporter config:    $MCPORTER_CONFIG_PATH"
 echo "Robin MCP URL:      $ROBIN_MCP_BASE_URL"

@@ -78,6 +78,16 @@ else
   echo "No mcporter config found at $MCPORTER_SRC (skipping)."
 fi
 
+# Bundle workspace memory (templates: params, learning-state, equity-snapshots, etc.)
+MEMORY_SRC="$OPENCLAW_STATE_DIR/workspace/memory"
+if [ -d "$MEMORY_SRC" ]; then
+  echo "Adding memory templates..."
+  mkdir -p "$STAGING/openclaw_bundle/memory"
+  (cd "$MEMORY_SRC" && tar cf - .) | (cd "$STAGING/openclaw_bundle/memory" && tar xf -)
+else
+  echo "No memory dir found at $MEMORY_SRC (skipping)."
+fi
+
 echo "Creating tarball..."
 tar -czf "$OUTPUT_DIR/$BUNDLE_NAME" -C "$STAGING" openclaw_bundle
 rm -rf "$STAGING"

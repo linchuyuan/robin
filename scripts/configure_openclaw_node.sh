@@ -277,6 +277,45 @@ else
   echo "Warning: No skills directory in bundle." >&2
 fi
 
+# ── 6b. Memory templates (merge into workspace; do not overwrite existing) ───
+
+WORKSPACE_MEMORY="$OPENCLAW_WORKSPACE/memory"
+BUNDLED_MEMORY="$BUNDLE_ROOT/memory"
+if [ -d "$BUNDLED_MEMORY" ]; then
+  echo "Installing memory templates..."
+  mkdir -p "$WORKSPACE_MEMORY"
+  for item in "$BUNDLED_MEMORY"/*; do
+    [ -e "$item" ] || continue
+    base=$(basename "$item")
+    dest="$WORKSPACE_MEMORY/$base"
+    if [ -e "$dest" ]; then
+      echo "  Skip (exists): $base"
+    else
+      echo "  Add: $base"
+      cp -r "$item" "$dest"
+    fi
+  done
+  if [ -d "$BUNDLED_MEMORY/reviews" ]; then
+    for f in "$BUNDLED_MEMORY/reviews"/*; do
+      [ -e "$f" ] || continue
+      base=$(basename "$f")
+      [ -e "$WORKSPACE_MEMORY/reviews/$base" ] || cp "$f" "$WORKSPACE_MEMORY/reviews/"
+    done
+  fi
+  if [ -d "$BUNDLED_MEMORY/decision-trace" ]; then
+    for f in "$BUNDLED_MEMORY/decision-trace"/*; do
+      [ -e "$f" ] || continue
+      base=$(basename "$f")
+      [ -e "$WORKSPACE_MEMORY/decision-trace/$base" ] || cp "$f" "$WORKSPACE_MEMORY/decision-trace/"
+    done
+  fi
+  # Ensure subdirs exist
+  mkdir -p "$WORKSPACE_MEMORY/reviews" "$WORKSPACE_MEMORY/decision-trace"
+else
+  echo "No memory bundle (skipping). Creating empty memory dirs..."
+  mkdir -p "$WORKSPACE_MEMORY/reviews" "$WORKSPACE_MEMORY/decision-trace"
+fi
+
 # ── 7. Config files ─────────────────────────────────────────────────────────
 
 mkdir -p "$WORKSPACE_CONFIG_DIR"

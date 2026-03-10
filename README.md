@@ -135,7 +135,7 @@ The MCP is the data and execution layer for the quant trading flow: **watchlist*
    ```
 2. Copy the created tarball to the new server, e.g.:
    ```bash
-   scp dist/openclaw-deploy-YYYYMMDD-HHMMSS.tar.gz user@new-server:/tmp/
+   scp dist/fulldeploy-YYYYMMDD-HHMMSS.tar.gz user@new-server:/tmp/
    ```
 
 **Deploy (on the new server)**
@@ -143,11 +143,11 @@ The MCP is the data and execution layer for the quant trading flow: **watchlist*
 3. Extract the tarball once (e.g. to `/tmp`) so you can run the configure script at the bundle root; the script will install into `/opt/openclaw` (or your chosen install root).
 4. Run the configure script:
    ```bash
-   tar -xzf /tmp/openclaw-deploy-YYYYMMDD-HHMMSS.tar.gz -C /tmp
+   tar -xzf /tmp/fulldeploy-YYYYMMDD-HHMMSS.tar.gz -C /tmp
    chmod +x /tmp/openclaw_bundle/configure_openclaw_node.sh
-   /tmp/openclaw_bundle/configure_openclaw_node.sh /tmp/openclaw-deploy-YYYYMMDD-HHMMSS.tar.gz /opt/openclaw
+   /tmp/openclaw_bundle/configure_openclaw_node.sh /tmp/fulldeploy-YYYYMMDD-HHMMSS.tar.gz /opt/openclaw
    ```
-   Or from a `robin` repo checkout: `./scripts/configure_openclaw_node.sh /tmp/openclaw-deploy-*.tar.gz /opt/openclaw`
+   Or from a `robin` repo checkout: `./scripts/configure_openclaw_node.sh /tmp/fulldeploy-*.tar.gz /opt/openclaw`
    When prompted, complete Codex OAuth (browser) and WhatsApp channel login (QR or pairing).
 5. (Optional) Set env vars before step 4 if you want a cron job or different WhatsApp/auth behavior, e.g.:
    ```bash
@@ -155,7 +155,7 @@ The MCP is the data and execution layer for the quant trading flow: **watchlist*
    OPENCLAW_CRON_EXPR="0 7 * * *" \
    OPENCLAW_CRON_TZ="America/Los_Angeles" \
    OPENCLAW_CRON_MESSAGE="Summarize overnight updates and portfolio risk." \
-   ./scripts/configure_openclaw_node.sh /tmp/openclaw-deploy-*.tar.gz /opt/openclaw
+   ./scripts/configure_openclaw_node.sh /tmp/fulldeploy-*.tar.gz /opt/openclaw
    ```
 6. Start the stack (Robin MCP + OpenClaw gateway):
    ```bash

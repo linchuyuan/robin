@@ -16,7 +16,7 @@ ROBIN_ROOT="$(dirname "$SCRIPT_DIR")"
 SKILLS_DIR="${SKILLS_DIR:-$HOME/clawd/skills}"
 OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROBIN_ROOT/dist}"
-BUNDLE_NAME="openclaw-deploy-$(date +%Y%m%d-%H%M%S).tar.gz"
+BUNDLE_NAME="fulldeploy-$(date +%Y%m%d-%H%M%S).tar.gz"
 
 EXCLUDE_ROBIN=".git .venv venv __pycache__ .pytest_cache .mypy_cache .ruff_cache dist"
 EXCLUDE_SKILLS=".git __pycache__ .pytest_cache .mypy_cache .ruff_cache"

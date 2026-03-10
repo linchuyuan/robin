@@ -4,7 +4,7 @@
 # extraction, config files, WhatsApp login, and Codex OAuth.
 #
 # Usage:
-#   ./configure_openclaw_node.sh /path/to/openclaw-deploy-YYYYMMDD-HHMMSS.tar.gz
+#   ./configure_openclaw_node.sh /path/to/fulldeploy-YYYYMMDD-HHMMSS.tar.gz
 #   OPENCLAW_CRON_EXPR="0 7 * * *" OPENCLAW_CRON_MESSAGE="Morning brief" \
 #     ./configure_openclaw_node.sh /path/to/bundle.tar.gz /opt/openclaw
 #

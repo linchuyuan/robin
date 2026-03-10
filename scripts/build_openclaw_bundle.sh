@@ -3,12 +3,18 @@
 # Usage:
 #   ./build_openclaw_bundle.sh
 #   SKILLS_DIR=/path/to/clawd/skills ./build_openclaw_bundle.sh
+#
+# Env vars:
+#   SKILLS_DIR        - Path to skills tree (default: $HOME/clawd/skills)
+#   OPENCLAW_STATE_DIR - OpenClaw state dir to bundle cron + config from (default: $HOME/.openclaw)
+#   OUTPUT_DIR        - Where to write the tarball (default: <robin>/dist)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROBIN_ROOT="$(dirname "$SCRIPT_DIR")"
 SKILLS_DIR="${SKILLS_DIR:-$HOME/clawd/skills}"
+OPENCLAW_STATE_DIR="${OPENCLAW_STATE_DIR:-$HOME/.openclaw}"
 OUTPUT_DIR="${OUTPUT_DIR:-$ROBIN_ROOT/dist}"
 BUNDLE_NAME="openclaw-deploy-$(date +%Y%m%d-%H%M%S).tar.gz"
 
@@ -50,6 +56,26 @@ if [ -f "$SCRIPT_DIR/configure_openclaw_node.sh" ]; then
   echo "Adding configure script to bundle root..."
   tr -d '\r' < "$SCRIPT_DIR/configure_openclaw_node.sh" > "$STAGING/openclaw_bundle/configure_openclaw_node.sh"
   chmod +x "$STAGING/openclaw_bundle/configure_openclaw_node.sh"
+fi
+
+# Bundle cron jobs if available
+CRON_SRC="$OPENCLAW_STATE_DIR/cron/jobs.json"
+if [ -f "$CRON_SRC" ]; then
+  echo "Adding cron jobs..."
+  mkdir -p "$STAGING/openclaw_bundle/cron"
+  cp "$CRON_SRC" "$STAGING/openclaw_bundle/cron/jobs.json"
+else
+  echo "No cron jobs found at $CRON_SRC (skipping)."
+fi
+
+# Bundle mcporter config if available
+MCPORTER_SRC="$OPENCLAW_STATE_DIR/workspace/config/mcporter.json"
+if [ -f "$MCPORTER_SRC" ]; then
+  echo "Adding mcporter config..."
+  mkdir -p "$STAGING/openclaw_bundle/config"
+  cp "$MCPORTER_SRC" "$STAGING/openclaw_bundle/config/mcporter.json"
+else
+  echo "No mcporter config found at $MCPORTER_SRC (skipping)."
 fi
 
 echo "Creating tarball..."

@@ -129,7 +129,7 @@ require_cmd curl
 if ! command -v "$PYTHON_EXE" >/dev/null 2>&1; then
   echo "Python3 not found. Installing..."
   if command -v apt-get >/dev/null 2>&1; then
-    apt-get update -qq && apt-get install -y python3 python3-pip
+    apt-get update -qq && apt-get install -y python3 python3-pip python-is-python3
   elif command -v yum >/dev/null 2>&1; then
     yum install -y python3 python3-pip
   elif command -v brew >/dev/null 2>&1; then
@@ -149,6 +149,15 @@ if ! "$PYTHON_EXE" -m ensurepip --version >/dev/null 2>&1; then
     apt-get install -y "python${PY_VER}-venv" || apt-get install -y python3-venv
   elif command -v yum >/dev/null 2>&1; then
     yum install -y python3-virtualenv || true
+  fi
+fi
+
+# Ensure 'python' command exists (some tools expect it)
+if ! command -v python >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get install -y python-is-python3 2>/dev/null || ln -sf "$(command -v python3)" /usr/local/bin/python
+  else
+    ln -sf "$(command -v python3)" /usr/local/bin/python
   fi
 fi
 
@@ -272,7 +281,13 @@ fi
 
 mkdir -p "$WORKSPACE_CONFIG_DIR"
 MCPORTER_CONFIG_PATH="$WORKSPACE_CONFIG_DIR/mcporter.json"
-cat > "$MCPORTER_CONFIG_PATH" <<EOF
+BUNDLED_MCPORTER="$BUNDLE_ROOT/config/mcporter.json"
+if [ -f "$BUNDLED_MCPORTER" ]; then
+  echo "Installing bundled mcporter config..."
+  cp "$BUNDLED_MCPORTER" "$MCPORTER_CONFIG_PATH"
+else
+  echo "Generating mcporter config..."
+  cat > "$MCPORTER_CONFIG_PATH" <<EOF
 {
   "mcpServers": {
     "robinhood": {
@@ -283,6 +298,7 @@ cat > "$MCPORTER_CONFIG_PATH" <<EOF
   "imports": []
 }
 EOF
+fi
 
 whatsapp_allow_from_json=$(json_array_from_csv "$WHATSAPP_ALLOW_FROM")
 whatsapp_group_allow_from_json=$(json_array_from_csv "$WHATSAPP_GROUP_ALLOW_FROM")
@@ -330,9 +346,28 @@ exec openclaw gateway "\$@"
 EOF
 chmod +x "$STACK_START_SCRIPT"
 
-# ── 9. Cron (optional) ──────────────────────────────────────────────────────
+# ── 9. Cron jobs (from bundle or env vars) ───────────────────────────────────
 
-if [ -n "$OPENCLAW_CRON_EXPR" ] && [ -n "$OPENCLAW_CRON_MESSAGE" ] && [ -n "$OPENCLAW_CRON_NAME" ]; then
+BUNDLED_CRON="$BUNDLE_ROOT/cron/jobs.json"
+if [ -f "$BUNDLED_CRON" ]; then
+  echo "Installing bundled cron jobs..."
+  mkdir -p "$OPENCLAW_STATE_DIR/cron"
+
+  # Rewrite hardcoded workspace paths from source machine to this machine's paths.
+  # The bundled jobs.json may contain paths like /home/chu/.openclaw/workspace/...
+  # which need to become $OPENCLAW_WORKSPACE/... on the target.
+  sed "s|/home/[^/]*/\.openclaw/workspace|$OPENCLAW_WORKSPACE|g" \
+    "$BUNDLED_CRON" > "$OPENCLAW_STATE_DIR/cron/jobs.json"
+
+  # Also rewrite skill paths if skills moved to npm global dir
+  if [ "$OPENCLAW_GLOBAL_SKILLS_DIR" != "$OPENCLAW_WORKSPACE/skills" ]; then
+    sed -i "s|$OPENCLAW_WORKSPACE/skills|$OPENCLAW_GLOBAL_SKILLS_DIR|g" \
+      "$OPENCLAW_STATE_DIR/cron/jobs.json"
+  fi
+
+  job_count=$(grep -c '"id"' "$OPENCLAW_STATE_DIR/cron/jobs.json" 2>/dev/null || echo 0)
+  echo "  Installed $job_count cron job(s)."
+elif [ -n "$OPENCLAW_CRON_EXPR" ] && [ -n "$OPENCLAW_CRON_MESSAGE" ] && [ -n "$OPENCLAW_CRON_NAME" ]; then
   if [ "$START_GATEWAY_FOR_CRON" = "1" ]; then
     if openclaw gateway status >/dev/null 2>&1; then
       echo "OpenClaw gateway already running; reusing it for cron registration."
@@ -357,6 +392,8 @@ if [ -n "$OPENCLAW_CRON_EXPR" ] && [ -n "$OPENCLAW_CRON_MESSAGE" ] && [ -n "$OPE
 
   echo "Registering OpenClaw cron job..."
   "$@"
+else
+  echo "No cron jobs bundled and no OPENCLAW_CRON_* env vars set (skipping)."
 fi
 
 # ── 10. WhatsApp + Codex OAuth (interactive, at the end) ────────────────────
@@ -385,6 +422,7 @@ echo "Skills dir:         $OPENCLAW_GLOBAL_SKILLS_DIR"
 echo "OpenClaw config:    $OPENCLAW_CONFIG_PATH"
 echo "mcporter config:    $MCPORTER_CONFIG_PATH"
 echo "Robin MCP URL:      $ROBIN_MCP_BASE_URL"
+echo "Cron jobs:          $OPENCLAW_STATE_DIR/cron/jobs.json"
 echo ""
 echo "Start the full stack with:"
 echo "  $STACK_START_SCRIPT"

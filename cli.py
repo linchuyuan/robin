@@ -63,8 +63,8 @@ def order(ctx: click.Context, symbol: str, qty: float, side: str, order_type: st
         click.echo("Dry run enabled. Payload would be sent but not executed.")
         return
     try:
-        session = get_session()
-        result = place_order(symbol.upper(), qty, side, order_type, price, session)
+        get_session()
+        result = place_order(symbol.upper(), qty, side, order_type, price)
         click.echo(f"Order submitted: {result.get('id')}")
     except OrderValidationError as exc:
         raise click.ClickException(str(exc))

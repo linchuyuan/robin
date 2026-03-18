@@ -17,7 +17,7 @@ from robin_options import (
     get_option_chain as fetch_option_chain,
     get_option_expirations as fetch_option_expirations,
 )
-from sentiment import get_fear_and_greed, get_vix
+from sentiment import get_fear_and_greed, get_vix, get_yield_curve, get_market_breadth
 from market_calendar import get_market_status, get_upcoming_holidays
 from quant import calculate_greeks
 from pretrade_policy import evaluate_pretrade_policy
@@ -1439,7 +1439,8 @@ def _classify_regime(fg: dict | None, vix: dict | None) -> str:
 
 @mcp.tool()
 def get_market_sentiment() -> dict:
-    """Get market sentiment (Fear & Greed Index and VIX).
+    """Get comprehensive market sentiment: Fear & Greed Index, VIX, yield curve (2Y/10Y spread),
+    and market breadth (sector advance/decline).
 
     Returns structured JSON for machine parsing, plus a `result_text` string.
     Use `fear_greed_score` (0-100) and `regime_classification` (risk_off | risk_on | neutral)
@@ -1447,8 +1448,9 @@ def get_market_sentiment() -> dict:
     """
     fg = get_fear_and_greed()
     vix = get_vix()
+    yields = get_yield_curve()
+    breadth = get_market_breadth()
 
-    # Human-readable formatting for backwards compatibility
     output = []
 
     if isinstance(fg, dict) and "error" not in fg:
@@ -1482,6 +1484,30 @@ def get_market_sentiment() -> dict:
     else:
         output.append(f"VIX: Error ({vix.get('error') if isinstance(vix, dict) else vix})")
 
+    output.append("")
+
+    yield_spread = None
+    yield_signal = None
+    if isinstance(yields, dict) and "error" not in yields:
+        output.append("--- Yield Curve ---")
+        output.append(f"10Y: {yields.get('yield_10y')} | 2Y: {yields.get('yield_2y')}")
+        output.append(f"Spread (10Y-2Y): {yields.get('spread_10y_2y')} ({yields.get('signal', '').upper()})")
+        yield_spread = yields.get("spread_10y_2y")
+        yield_signal = yields.get("signal")
+    else:
+        output.append(f"Yield Curve: Error ({yields.get('error') if isinstance(yields, dict) else yields})")
+
+    output.append("")
+
+    breadth_signal = None
+    if isinstance(breadth, dict) and "error" not in breadth:
+        output.append("--- Market Breadth ---")
+        output.append(f"Advancing: {breadth.get('advancing_sectors')} | Declining: {breadth.get('declining_sectors')}")
+        output.append(f"A/D Ratio: {breadth.get('ad_ratio')} ({breadth.get('breadth_signal', '').upper()})")
+        breadth_signal = breadth.get("breadth_signal")
+    else:
+        output.append(f"Market Breadth: Error ({breadth.get('error') if isinstance(breadth, dict) else breadth})")
+
     regime_label = fg.get("rating") if isinstance(fg, dict) and "error" not in fg else None
     fear_greed_score = float(fg.get("score", 0)) if isinstance(fg, dict) and "error" not in fg else None
     regime_classification = _classify_regime(fg if isinstance(fg, dict) and "error" not in fg else None, vix)
@@ -1489,9 +1515,14 @@ def get_market_sentiment() -> dict:
     return {
         "fear_and_greed": fg,
         "vix": vix,
+        "yield_curve": yields,
+        "market_breadth": breadth,
         "regime": regime_label,
         "fear_greed_score": fear_greed_score,
         "vix_value": vix_value,
+        "yield_spread": yield_spread,
+        "yield_signal": yield_signal,
+        "breadth_signal": breadth_signal,
         "regime_classification": regime_classification,
         "result_text": "\n".join(output),
     }

@@ -1,4 +1,4 @@
-"""Market sentiment helpers (Fear & Greed, VIX)."""
+"""Market sentiment helpers (Fear & Greed, VIX, yield curve, breadth)."""
 import requests
 import yfinance as yf
 from typing import Dict, Any, Optional
@@ -63,6 +63,90 @@ def get_vix() -> Dict[str, Any]:
             "day_low": info.get("dayLow"),
             "52_week_high": info.get("fiftyTwoWeekHigh"),
             "52_week_low": info.get("fiftyTwoWeekLow")
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def get_yield_curve() -> Dict[str, Any]:
+    """
+    Fetch US Treasury yield curve data (2Y/10Y spread) from Yahoo Finance.
+    Inverted yield curve (negative spread) is a recession signal.
+    """
+    try:
+        tnx = yf.Ticker("^TNX")  # 10-year
+        try:
+            two_year = yf.Ticker("2YY=F")
+            two_year_info = two_year.info or {}
+            yield_2y = two_year_info.get("regularMarketPrice") or two_year_info.get("previousClose")
+        except Exception:
+            yield_2y = None
+
+        if yield_2y is None:
+            twoy = yf.Ticker("^IRX")  # 13-week T-bill as fallback
+            twoy_info = twoy.info or {}
+            yield_2y = twoy_info.get("regularMarketPrice") or twoy_info.get("previousClose")
+
+        tnx_info = tnx.info or {}
+        yield_10y = tnx_info.get("regularMarketPrice") or tnx_info.get("previousClose")
+
+        if yield_10y is None or yield_2y is None:
+            return {"error": "Could not fetch yield data"}
+
+        yield_10y = float(yield_10y)
+        yield_2y = float(yield_2y)
+        spread = round(yield_10y - yield_2y, 4)
+
+        signal = "normal"
+        if spread < 0:
+            signal = "inverted"
+        elif spread < 0.25:
+            signal = "flat"
+
+        return {
+            "yield_10y": yield_10y,
+            "yield_2y": yield_2y,
+            "spread_10y_2y": spread,
+            "signal": signal,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def get_market_breadth() -> Dict[str, Any]:
+    """
+    Fetch market breadth using sector ETF advance/decline as proxy.
+    """
+    try:
+        sectors = ["XLK", "XLF", "XLE", "XLV", "XLI", "XLC", "XLY", "XLP", "XLU", "XLRE", "XLB"]
+        data = yf.download(sectors, period="5d", progress=False, auto_adjust=False)
+        if data is None or data.empty:
+            return {"error": "No breadth data available"}
+
+        close = data["Close"] if "Close" in data else data
+        advancing = 0
+        declining = 0
+        for sym in sectors:
+            try:
+                series = close[sym] if sym in close.columns else None
+                if series is not None and len(series.dropna()) >= 2:
+                    ret = float(series.dropna().iloc[-1] / series.dropna().iloc[0] - 1)
+                    if ret > 0:
+                        advancing += 1
+                    else:
+                        declining += 1
+            except Exception:
+                continue
+
+        ad_ratio = round(advancing / max(declining, 1), 2)
+        breadth_signal = "healthy" if ad_ratio > 1.5 else ("weak" if ad_ratio < 0.7 else "mixed")
+
+        return {
+            "advancing_sectors": advancing,
+            "declining_sectors": declining,
+            "ad_ratio": ad_ratio,
+            "breadth_signal": breadth_signal,
+            "period": "5d",
         }
     except Exception as e:
         return {"error": str(e)}

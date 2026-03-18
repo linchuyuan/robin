@@ -116,31 +116,248 @@ def calculate_greeks(S, K, T, r, sigma, q=0.0, option_type="call"):
     except Exception:
         return {k: None for k in ["delta", "gamma", "theta", "vega", "rho"]}
 
+def calculate_macd(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> dict:
+    """Calculate MACD, Signal line, and Histogram."""
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return {
+        "macd": macd_line,
+        "signal": signal_line,
+        "histogram": histogram,
+    }
+
+
+def calculate_bollinger_bands(close: pd.Series, period: int = 20, std_dev: float = 2.0) -> dict:
+    """Calculate Bollinger Bands (upper, middle, lower) and %B."""
+    middle = close.rolling(window=period).mean()
+    rolling_std = close.rolling(window=period).std()
+    upper = middle + std_dev * rolling_std
+    lower = middle - std_dev * rolling_std
+    pct_b = (close - lower) / (upper - lower)
+    bandwidth = (upper - lower) / middle
+    return {
+        "upper": upper,
+        "middle": middle,
+        "lower": lower,
+        "pct_b": pct_b,
+        "bandwidth": bandwidth,
+    }
+
+
+def calculate_iv_rank(symbol: str, current_iv: float | None = None) -> dict | None:
+    """
+    Calculate IV Rank and IV Percentile for a symbol.
+    IV Rank = (current_iv - 52w_low_iv) / (52w_high_iv - 52w_low_iv) * 100
+    IV Percentile = % of days in past year where IV was below current IV
+    Uses realized volatility as proxy when current IV is not provided.
+    """
+    try:
+        ticker = yf.Ticker(symbol)
+        hist = ticker.history(period="1y")
+        if len(hist) < 30:
+            return None
+
+        daily_returns = hist["Close"].pct_change().dropna()
+        rolling_iv = daily_returns.rolling(window=20).std() * math.sqrt(252)
+        rolling_iv = rolling_iv.dropna()
+        if len(rolling_iv) < 20:
+            return None
+
+        if current_iv is not None and current_iv > 0:
+            iv_now = current_iv
+        else:
+            iv_now = float(rolling_iv.iloc[-1])
+
+        iv_high = float(rolling_iv.max())
+        iv_low = float(rolling_iv.min())
+        iv_range = iv_high - iv_low
+
+        iv_rank = ((iv_now - iv_low) / iv_range * 100.0) if iv_range > 0 else 50.0
+        iv_percentile = float((rolling_iv <= iv_now).mean() * 100.0)
+
+        return {
+            "iv_current": round(iv_now, 4),
+            "iv_52w_high": round(iv_high, 4),
+            "iv_52w_low": round(iv_low, 4),
+            "iv_rank": round(iv_rank, 2),
+            "iv_percentile": round(iv_percentile, 2),
+        }
+    except Exception:
+        return None
+
+
+def detect_unusual_options_activity(calls: list[dict], puts: list[dict], current_price: float) -> dict:
+    """
+    Analyze option chain data for unusual activity signals.
+    Detects: high volume/OI ratios, volume spikes, skew anomalies.
+    """
+    unusual_calls = []
+    unusual_puts = []
+    total_call_premium = 0.0
+    total_put_premium = 0.0
+
+    def _analyze_side(options: list[dict], side: str) -> list[dict]:
+        nonlocal total_call_premium, total_put_premium
+        unusual = []
+        for opt in options:
+            vol = int(opt.get("volume") or 0)
+            oi = int(opt.get("open_interest") or 0)
+            strike = float(opt.get("strike") or 0)
+            mid = float(opt.get("price") or opt.get("mid") or 0)
+            iv = float(opt.get("implied_volatility") or 0)
+
+            premium_traded = vol * mid * 100
+            if side == "call":
+                total_call_premium += premium_traded
+            else:
+                total_put_premium += premium_traded
+
+            vol_oi_ratio = (vol / oi) if oi > 0 else 0
+            if vol >= 500 and vol_oi_ratio > 2.0:
+                unusual.append({
+                    "strike": strike,
+                    "volume": vol,
+                    "open_interest": oi,
+                    "vol_oi_ratio": round(vol_oi_ratio, 2),
+                    "implied_volatility": round(iv, 4),
+                    "premium_traded": round(premium_traded, 2),
+                    "moneyness": round((strike / current_price - 1) * 100, 2) if current_price > 0 else None,
+                    "side": side,
+                })
+        return unusual
+
+    unusual_calls = _analyze_side(calls, "call")
+    unusual_puts = _analyze_side(puts, "put")
+
+    all_unusual = sorted(
+        unusual_calls + unusual_puts,
+        key=lambda x: x.get("premium_traded", 0),
+        reverse=True,
+    )[:10]
+
+    premium_ratio = None
+    if total_call_premium > 0:
+        premium_ratio = round(total_put_premium / total_call_premium, 4)
+
+    net_premium_bias = "neutral"
+    if premium_ratio is not None:
+        if premium_ratio > 1.5:
+            net_premium_bias = "bearish"
+        elif premium_ratio < 0.6:
+            net_premium_bias = "bullish"
+
+    return {
+        "unusual_activity": all_unusual,
+        "unusual_call_count": len(unusual_calls),
+        "unusual_put_count": len(unusual_puts),
+        "total_call_premium_traded": round(total_call_premium, 2),
+        "total_put_premium_traded": round(total_put_premium, 2),
+        "put_call_premium_ratio": premium_ratio,
+        "net_premium_bias": net_premium_bias,
+    }
+
+
+def get_portfolio_risk_summary(positions: list[dict]) -> dict:
+    """
+    Calculate portfolio-level risk metrics from current positions.
+    Includes: total exposure, beta-weighted delta, concentration, sector breakdown.
+    """
+    if not positions:
+        return {"error": "No positions provided."}
+
+    total_equity = sum(float(p.get("equity") or 0) for p in positions)
+    if total_equity <= 0:
+        return {"error": "Total equity is zero or negative."}
+
+    symbols = [p["symbol"] for p in positions if p.get("symbol")]
+    if not symbols:
+        return {"error": "No valid symbols in positions."}
+
+    sector_exposure: dict[str, float] = {}
+    position_weights: list[dict] = []
+    total_unrealized_pnl = 0.0
+    total_day_pnl = 0.0
+
+    for pos in positions:
+        sym = pos.get("symbol", "")
+        equity = float(pos.get("equity") or 0)
+        weight = (equity / total_equity * 100) if total_equity > 0 else 0
+        unrealized = float(pos.get("equity_change") or 0)
+        day_pnl = float(pos.get("intraday_profit_loss") or 0)
+
+        total_unrealized_pnl += unrealized
+        total_day_pnl += day_pnl
+
+        position_weights.append({
+            "symbol": sym,
+            "equity": round(equity, 2),
+            "weight_pct": round(weight, 2),
+            "unrealized_pnl": round(unrealized, 2),
+            "day_pnl": round(day_pnl, 2),
+        })
+
+        sector = str(pos.get("sector") or "Unknown")
+        sector_exposure[sector] = sector_exposure.get(sector, 0.0) + equity
+
+    position_weights.sort(key=lambda x: x.get("weight_pct", 0), reverse=True)
+    sector_breakdown = [
+        {"sector": s, "equity": round(e, 2), "weight_pct": round(e / total_equity * 100, 2)}
+        for s, e in sorted(sector_exposure.items(), key=lambda x: x[1], reverse=True)
+    ]
+
+    top_weight = position_weights[0]["weight_pct"] if position_weights else 0
+    hhi = sum((w["weight_pct"] / 100) ** 2 for w in position_weights)
+
+    concentration_risk = "low"
+    if top_weight > 30 or hhi > 0.25:
+        concentration_risk = "high"
+    elif top_weight > 20 or hhi > 0.18:
+        concentration_risk = "medium"
+
+    return {
+        "total_equity": round(total_equity, 2),
+        "position_count": len(positions),
+        "total_unrealized_pnl": round(total_unrealized_pnl, 2),
+        "total_day_pnl": round(total_day_pnl, 2),
+        "positions": position_weights,
+        "sector_breakdown": sector_breakdown,
+        "concentration": {
+            "hhi": round(hhi, 4),
+            "top_position_weight_pct": round(top_weight, 2),
+            "risk_level": concentration_risk,
+        },
+    }
+
+
 def get_technical_indicators(symbol: str) -> dict:
     """
     Calculate technical indicators for a given symbol.
     Returns a dictionary with calculated metrics.
     """
     try:
-        # Fetch enough history for 200D SMA
         ticker = yf.Ticker(symbol)
-        # Get 2 years to be safe for 200 SMA + volatility
         hist = ticker.history(period="2y")
-        
-        # Fetch SPY for Relative Strength
+
         spy_ticker = yf.Ticker("SPY")
         spy_hist = spy_ticker.history(period="2y")
         
         if len(hist) < 200:
              return {"error": f"Not enough history for {symbol} (found {len(hist)} days)"}
 
-        # Current price (last close)
         current_price = hist['Close'].iloc[-1]
         
         # SMAs
+        sma_20 = hist['Close'].rolling(window=20).mean().iloc[-1]
         sma_50 = hist['Close'].rolling(window=50).mean().iloc[-1]
         sma_200 = hist['Close'].rolling(window=200).mean().iloc[-1]
-        
+
+        # EMAs
+        ema_9 = hist['Close'].ewm(span=9, adjust=False).mean().iloc[-1]
+        ema_21 = hist['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
+
         # RSI
         rsi_series = calculate_rsi(hist['Close'])
         rsi_14 = rsi_series.iloc[-1]
@@ -148,47 +365,114 @@ def get_technical_indicators(symbol: str) -> dict:
         # ATR
         atr_series = calculate_atr(hist['High'], hist['Low'], hist['Close'])
         atr_14 = atr_series.iloc[-1]
-        
-        # Relative Strength vs SPY (1-year lookback percentile)
+
+        # MACD
+        macd_data = calculate_macd(hist['Close'])
+        macd_val = macd_data["macd"].iloc[-1]
+        macd_signal = macd_data["signal"].iloc[-1]
+        macd_hist = macd_data["histogram"].iloc[-1]
+        macd_prev_hist = macd_data["histogram"].iloc[-2] if len(macd_data["histogram"]) >= 2 else 0
+        macd_crossover = "bullish" if macd_hist > 0 and macd_prev_hist <= 0 else (
+            "bearish" if macd_hist < 0 and macd_prev_hist >= 0 else "none"
+        )
+
+        # Bollinger Bands
+        bb = calculate_bollinger_bands(hist['Close'])
+        bb_upper = bb["upper"].iloc[-1]
+        bb_lower = bb["lower"].iloc[-1]
+        bb_pct_b = bb["pct_b"].iloc[-1]
+        bb_bandwidth = bb["bandwidth"].iloc[-1]
+
+        # Relative Strength vs SPY
         rs_percentile = calculate_relative_strength(hist['Close'], spy_hist['Close'], period=252)
         
         # Returns
         ret_5d = (hist['Close'].iloc[-1] / hist['Close'].iloc[-6] - 1) if len(hist) >= 6 else 0.0
         ret_20d = (hist['Close'].iloc[-1] / hist['Close'].iloc[-21] - 1) if len(hist) >= 21 else 0.0
         
-        # Relative Volume (current volume vs 20D avg)
-        # Use the 20 days prior to the last day for the average to avoid skewing with today's partial volume if live
+        # Relative Volume
         vol_20d_avg = hist['Volume'].iloc[-21:-1].mean()
         curr_vol = hist['Volume'].iloc[-1]
         rel_vol = (curr_vol / vol_20d_avg) if vol_20d_avg > 0 else 1.0
 
-        # ATR-based Sizing (Volatility Normalization)
-        # Suggested shares for $1,000 risk unit with 2xATR stop
-        # Risk = 2 * ATR
-        # Shares = $1000 / (2 * ATR)
+        # VWAP (intraday proxy using daily typical price * volume)
+        typical_price = (hist['High'] + hist['Low'] + hist['Close']) / 3
+        cumulative_vwap = (typical_price * hist['Volume']).rolling(window=20).sum() / hist['Volume'].rolling(window=20).sum()
+        vwap_20d = cumulative_vwap.iloc[-1] if not pd.isna(cumulative_vwap.iloc[-1]) else None
+
+        # IV Rank
+        iv_data = calculate_iv_rank(symbol)
+
+        # ATR-based Sizing
         risk_unit = 1000.0
         stop_distance = 2.0 * atr_14 if atr_14 and atr_14 > 0 else None
         vol_shares = int(risk_unit / stop_distance) if stop_distance else 0
 
-        return {
+        # Trend strength composite
+        above_sma_50 = float(current_price) > float(sma_50) if not pd.isna(sma_50) else None
+        above_sma_200 = float(current_price) > float(sma_200) if not pd.isna(sma_200) else None
+        golden_cross = float(sma_50) > float(sma_200) if not (pd.isna(sma_50) or pd.isna(sma_200)) else None
+
+        trend_score = 0
+        if above_sma_50:
+            trend_score += 1
+        if above_sma_200:
+            trend_score += 1
+        if golden_cross:
+            trend_score += 1
+        if not pd.isna(macd_hist) and macd_hist > 0:
+            trend_score += 1
+        if not pd.isna(rsi_14) and 40 < float(rsi_14) < 70:
+            trend_score += 1
+        trend_label = "strong_up" if trend_score >= 4 else ("up" if trend_score >= 3 else ("neutral" if trend_score >= 2 else "down"))
+
+        result = {
             "symbol": symbol.upper(),
             "price": round(float(current_price), 2),
+            "sma_20": round(float(sma_20), 2) if not pd.isna(sma_20) else None,
             "sma_50": round(float(sma_50), 2) if not pd.isna(sma_50) else None,
             "sma_200": round(float(sma_200), 2) if not pd.isna(sma_200) else None,
+            "ema_9": round(float(ema_9), 2) if not pd.isna(ema_9) else None,
+            "ema_21": round(float(ema_21), 2) if not pd.isna(ema_21) else None,
             "rsi_14": round(float(rsi_14), 2) if not pd.isna(rsi_14) else None,
             "atr_14": round(float(atr_14), 2) if not pd.isna(atr_14) else None,
+            "macd": {
+                "value": round(float(macd_val), 4) if not pd.isna(macd_val) else None,
+                "signal": round(float(macd_signal), 4) if not pd.isna(macd_signal) else None,
+                "histogram": round(float(macd_hist), 4) if not pd.isna(macd_hist) else None,
+                "crossover": macd_crossover,
+            },
+            "bollinger": {
+                "upper": round(float(bb_upper), 2) if not pd.isna(bb_upper) else None,
+                "lower": round(float(bb_lower), 2) if not pd.isna(bb_lower) else None,
+                "pct_b": round(float(bb_pct_b), 4) if not pd.isna(bb_pct_b) else None,
+                "bandwidth": round(float(bb_bandwidth), 4) if not pd.isna(bb_bandwidth) else None,
+            },
+            "vwap_20d": round(float(vwap_20d), 2) if vwap_20d is not None else None,
             "rs_spy_percentile": round(float(rs_percentile), 2) if rs_percentile is not None else None,
             "return_5d": round(float(ret_5d), 4),
             "return_20d": round(float(ret_20d), 4),
             "relative_volume": round(float(rel_vol), 2),
+            "trend": {
+                "score": trend_score,
+                "label": trend_label,
+                "above_sma_50": above_sma_50,
+                "above_sma_200": above_sma_200,
+                "golden_cross": golden_cross,
+            },
             "volatility_sizing": {
                 "risk_unit": risk_unit,
                 "atr_stop_dist": round(float(stop_distance), 2) if stop_distance else None,
-                "suggested_shares_per_1k_risk": vol_shares
+                "suggested_shares_per_1k_risk": vol_shares,
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "timezone": "UTC",
         }
+
+        if iv_data:
+            result["iv_rank_data"] = iv_data
+
+        return result
     except Exception as e:
         return {"error": str(e)}
 

@@ -19,10 +19,34 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+try:
+    from execution_models import estimate_slippage_bps
+except ImportError:
+    estimate_slippage_bps = None
+
 # --- Universe / period ---
-SYMBOLS = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "AMD", "NFLX"]
+# Expanded universe across sectors to reduce survivorship bias (mega-cap tech-only
+# backtests report inflated Sharpe). Sector-balanced large-cap coverage.
+SYMBOLS = [
+    # Tech
+    "AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META", "AMD", "NFLX",
+    "CRM", "ORCL", "ADBE", "INTC", "CSCO",
+    # Financials
+    "JPM", "BAC", "GS", "MS", "WFC", "C", "V", "MA",
+    # Healthcare
+    "UNH", "LLY", "PFE", "JNJ", "MRK", "ABBV", "TMO",
+    # Industrials / Energy / Staples
+    "CAT", "GE", "DE", "HON", "BA",
+    "XOM", "CVX", "COP", "SLB",
+    "PG", "KO", "PEP", "WMT", "COST",
+    # Consumer discretionary
+    "HD", "MCD", "NKE", "SBUX",
+    # Communication / Utilities
+    "DIS", "TMUS", "VZ",
+    "NEE", "DUK",
+]
 BENCHMARK = "SPY"
-START_DATE = "2024-01-01"
+START_DATE = "2019-01-01"  # longer history for walk-forward validation
 END_DATE = datetime.now().strftime("%Y-%m-%d")
 
 # --- Portfolio / risk ---
@@ -35,13 +59,31 @@ CASH_BUFFER_PCT = 0.20
 STOP_LOSS_PCT = 0.08
 
 # --- Execution assumptions ---
-SLIPPAGE_BPS = 5.0
+# Flat fallback when execution_models unavailable; otherwise curve is used.
+SLIPPAGE_BPS_FALLBACK = 5.0
 FEE_PER_TRADE = 1.0
 TRADING_DAYS = 252
 
 
-def _slippage_factor() -> float:
-    return SLIPPAGE_BPS / 10_000.0
+def _slippage_bps_for(*, price: float, qty: int, adv_usd: float, vol_20d_annual: float) -> float:
+    """Compute one-way slippage bps from the empirical curve, with flat fallback."""
+    if estimate_slippage_bps is None:
+        return SLIPPAGE_BPS_FALLBACK
+    try:
+        order_notional = float(price) * float(qty)
+        result = estimate_slippage_bps(
+            order_notional_usd=order_notional,
+            adv_usd=max(1.0, float(adv_usd)),
+            vol_20d_annual=max(0.0, float(vol_20d_annual)),
+            minute_of_day=None,  # daily bar — use midday
+        )
+        return float(result.get("slippage_bps", SLIPPAGE_BPS_FALLBACK))
+    except Exception:
+        return SLIPPAGE_BPS_FALLBACK
+
+
+def _slippage_factor(bps: float) -> float:
+    return bps / 10_000.0
 
 
 def _max_drawdown(equity_series: pd.Series) -> float:
@@ -210,7 +252,6 @@ def _simulate_on_dates(
     positions: dict[str, dict[str, float]] = {}
     history: list[dict] = [{"date": dates[0], "equity": INITIAL_CAPITAL, "cash": INITIAL_CAPITAL, "positions": 0}]
     trades: list[dict] = []
-    slip = _slippage_factor()
 
     print("Starting simulation...")
     for index in range(1, len(dates)):
@@ -224,7 +265,16 @@ def _simulate_on_dates(
             quantity = int(positions[symbol]["qty"])
 
             if close_price <= entry_price * (1.0 - stop_loss_pct):
-                exit_price = close_price * (1.0 - slip)
+                # Empirical slippage curve on exit
+                feat = symbol_data[symbol]["features"].loc[date]
+                vol_20d = float(feat.get("vol_20d") or 0.25)
+                close_vol = float(feat.get("Volume") or 0)
+                adv_usd = close_vol * close_price if close_vol and close_price else 1e7
+                exit_slip_bps = _slippage_bps_for(
+                    price=close_price, qty=quantity, adv_usd=adv_usd, vol_20d_annual=vol_20d
+                )
+                exit_slip_factor = _slippage_factor(exit_slip_bps)
+                exit_price = close_price * (1.0 - exit_slip_factor)
                 proceeds = quantity * exit_price - FEE_PER_TRADE
                 cash += max(0.0, proceeds)
                 trades.append(
@@ -235,6 +285,7 @@ def _simulate_on_dates(
                         "qty": quantity,
                         "price": round(exit_price, 4),
                         "notional": round(quantity * exit_price, 2),
+                        "slippage_bps": round(exit_slip_bps, 2),
                     }
                 )
                 del positions[symbol]
@@ -273,8 +324,19 @@ def _simulate_on_dates(
             if spendable_cash <= 0:
                 break
 
-            exec_price = next_open * (1.0 + slip)
+            # Preview qty from flat estimate, then recompute slippage for that size
             target_notional = min(equity * float(max_position_pct), spendable_cash)
+            feat = symbol_data[symbol]["features"].loc[prev_date]
+            vol_20d = float(feat.get("vol_20d") or 0.25)
+            prev_vol = float(feat.get("Volume") or 0)
+            adv_usd = prev_vol * next_open if prev_vol and next_open else 1e7
+
+            preview_qty = max(1, int(max(0.0, target_notional - FEE_PER_TRADE) / next_open))
+            entry_slip_bps = _slippage_bps_for(
+                price=next_open, qty=preview_qty, adv_usd=adv_usd, vol_20d_annual=vol_20d
+            )
+            entry_slip_factor = _slippage_factor(entry_slip_bps)
+            exec_price = next_open * (1.0 + entry_slip_factor)
             qty = int(max(0.0, target_notional - FEE_PER_TRADE) / exec_price)
             if qty <= 0:
                 continue
@@ -296,6 +358,7 @@ def _simulate_on_dates(
                     "price": round(exec_price, 4),
                     "score": round(score, 2),
                     "notional": round(qty * exec_price, 2),
+                    "slippage_bps": round(entry_slip_bps, 2),
                 }
             )
 

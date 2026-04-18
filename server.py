@@ -24,6 +24,7 @@ from pretrade_policy import evaluate_pretrade_policy
 from mcp_reddit_tools import register_reddit_tools
 from mcp_quant_tools import register_quant_tools
 from mcp_kalshi_tools import register_kalshi_tools
+from mcp_advanced_tools import register_advanced_tools
 from option_utils import select_nearby_strikes, to_float, to_int
 
 import robin_stocks.robinhood as rh
@@ -33,6 +34,7 @@ mcp = FastMCP("Robinhood")
 register_reddit_tools(mcp)
 register_quant_tools(mcp)
 register_kalshi_tools(mcp)
+register_advanced_tools(mcp)
 
 
 def _extract_api_error(payload) -> str | None:

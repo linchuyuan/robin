@@ -288,7 +288,24 @@ def _new_symbol_stats() -> Dict[str, Any]:
         "bullish_hits": 0,
         "bearish_hits": 0,
         "subreddit_mentions": defaultdict(int),
+        # Coordinated-pump detection: count mentions per author for this symbol
+        "author_mention_counts": defaultdict(int),
+        # Temporal decay: sum of decay-weighted mentions
+        "decay_weighted_mentions": 0.0,
+        # Track earliest/latest mention time for burst-density flag
+        "first_mention_ts": None,
+        "last_mention_ts": None,
     }
+
+
+def _temporal_decay(hours_old: float, half_life_hours: float = 12.0) -> float:
+    """Exponential decay; 12h half-life for Reddit attention cycles."""
+    if hours_old < 0:
+        return 1.0
+    try:
+        return 0.5 ** (hours_old / half_life_hours)
+    except Exception:
+        return 0.0
 
 
 def _collect_symbol_stats(
@@ -345,18 +362,32 @@ def _collect_symbol_stats(
         post_polarity = _text_polarity(post_text)
         post_weight = math.log1p(max(0, score) + max(0, num_comments))
 
+        hours_old_post = max(0.0, (now - post_dt).total_seconds() / 3600)
+        decay_post = _temporal_decay(hours_old_post)
         for sym in post_mentions:
             sym_stats = stats[sym]
             sym_stats["mention_count_total"] += 1
             sym_stats["mention_count_posts"] += 1
             if author:
                 sym_stats["unique_authors"].add(author)
+                sym_stats["author_mention_counts"][author] += 1
             sym_stats["post_score_sum"] += score
             sym_stats["post_score_n"] += 1
             if len(sym_stats["sample_context"]) < 3:
                 sym_stats["sample_context"].append(_snippet(post_text))
-            sym_stats["weighted_polarity_sum"] += post_polarity * post_weight
-            sym_stats["polarity_weight_sum"] += post_weight
+            # Combine engagement weight with temporal decay
+            effective_weight = post_weight * decay_post
+            sym_stats["weighted_polarity_sum"] += post_polarity * effective_weight
+            sym_stats["polarity_weight_sum"] += effective_weight
+            sym_stats["decay_weighted_mentions"] += decay_post
+            sym_stats["first_mention_ts"] = (
+                post_dt if sym_stats["first_mention_ts"] is None or post_dt < sym_stats["first_mention_ts"]
+                else sym_stats["first_mention_ts"]
+            )
+            sym_stats["last_mention_ts"] = (
+                post_dt if sym_stats["last_mention_ts"] is None or post_dt > sym_stats["last_mention_ts"]
+                else sym_stats["last_mention_ts"]
+            )
             if post_polarity > 0:
                 sym_stats["bullish_hits"] += 1
             elif post_polarity < 0:
@@ -581,7 +612,29 @@ def get_reddit_sentiment_snapshot(
         confidence = max(0.0, min(1.0, volume_factor * diversity_factor * source_quality_factor))
         sentiment_score = max(-1.0, min(1.0, polarity * quality_weight))
 
-        if burst_z >= 2.0 and confidence < 0.45:
+        # Coordinated-pump detection: is any single author responsible for
+        # an outsized share of mentions?
+        author_counts = st.get("author_mention_counts") or {}
+        top_author_share = 0.0
+        top_author = None
+        if author_counts and total > 0:
+            top_author, top_author_count = max(author_counts.items(), key=lambda kv: kv[1])
+            top_author_share = top_author_count / total
+        coordinated_pump_risk = (
+            total >= 5 and (top_author_share > 0.40 or unique_authors < max(2, int(total * 0.3)))
+        )
+
+        # Burst density: all mentions within a short time window is suspicious
+        burst_density_risk = False
+        first_ts = st.get("first_mention_ts")
+        last_ts = st.get("last_mention_ts")
+        if first_ts and last_ts and total >= 8:
+            span_hours = max(0.01, (last_ts - first_ts).total_seconds() / 3600)
+            rate_per_hour = total / span_hours
+            if rate_per_hour > 20:  # 20+ mentions/hour for a single ticker is unusual
+                burst_density_risk = True
+
+        if (burst_z >= 2.0 and confidence < 0.45) or coordinated_pump_risk or burst_density_risk:
             hype_risk = "high"
         elif burst_z >= 1.0:
             hype_risk = "medium"
@@ -597,6 +650,10 @@ def get_reddit_sentiment_snapshot(
                 "bearish_ratio": round(bearish_ratio, 3),
                 "hype_risk": hype_risk,
                 "confidence": round(confidence, 3),
+                "coordinated_pump_risk": coordinated_pump_risk,
+                "burst_density_risk": burst_density_risk,
+                "top_author_share": round(top_author_share, 3),
+                "decay_weighted_mentions": round(st.get("decay_weighted_mentions", 0.0), 3),
                 "components": {
                     "text_polarity": round(polarity, 4),
                     "engagement_weight": round(min(1.0, math.log1p(total) / 4.0), 3),

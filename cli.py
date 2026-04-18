@@ -7,7 +7,7 @@ import click
 import robin_stocks.robinhood as rh
 
 from auth import get_session, logout
-from orders import OrderValidationError, place_order
+from orders import OrderValidationError, place_order, validate_order
 from portfolio import get_quote, list_positions
 from account import get_account_profile
 from market_data import get_history, get_news
@@ -17,6 +17,7 @@ from order_history import get_order_history, get_order_detail
 from robin_options import get_option_chain
 from sentiment import get_fear_and_greed, get_vix
 from market_calendar import get_market_status, get_upcoming_holidays, get_early_closes
+from option_utils import select_nearby_strikes, to_float
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -33,13 +34,14 @@ def cli(ctx: click.Context, debug: bool, dry_run: bool) -> None:
 @click.option("--mfa", help="One-time password (if required) from your authenticator app.")
 @click.pass_context
 def login(ctx: click.Context, mfa: str | None) -> None:
-    session = get_session()
+    session = get_session(mfa_code=mfa)
     if ctx.obj["debug"]:
-        click.echo(f"Session cached at {session.get('access_token')[:8]}...")
+        token = str(session.get("access_token") or "")
+        click.echo(f"Session cached at {token[:8]}...")
     click.echo("Logged in and session cached.")
 
 
-@cli.command()
+@cli.command(name="logout")
 def logout_cmd() -> None:
     logout()
     click.echo("Session cleared; you are logged out.")
@@ -54,14 +56,22 @@ def logout_cmd() -> None:
 @click.option("--yes", is_flag=True, help="Skip confirmation for risky orders.")
 @click.pass_context
 def order(ctx: click.Context, symbol: str, qty: float, side: str, order_type: str, price: float | None, yes: bool) -> None:
-    get_session()
-    if order_type == "limit" and price is None:
-        raise click.UsageError("Limit orders require --price.")
+    try:
+        validate_order(symbol.upper(), qty, side, order_type, price)
+    except OrderValidationError as exc:
+        raise click.ClickException(str(exc))
+
+    if ctx.obj["dry_run"]:
+        click.echo(
+            "Dry run enabled. "
+            f"Would submit {side} {qty:g} {symbol.upper()} as a {order_type} order"
+            + (f" at {price}" if price is not None else "")
+            + "."
+        )
+        return
     if side == "sell" and not yes:
         click.confirm("You are about to sell. Continue?", abort=True)
-    if ctx.obj["dry_run"]:
-        click.echo("Dry run enabled. Payload would be sent but not executed.")
-        return
+
     try:
         get_session()
         result = place_order(symbol.upper(), qty, side, order_type, price)
@@ -78,7 +88,7 @@ def quote(symbol: str) -> None:
     click.echo(f"{symbol.upper()}: {data}")
 
 
-@cli.command()
+@cli.command(name="portfolio")
 def portfolio_cmd() -> None:
     """List current positions with detailed P/L metrics."""
     get_session()
@@ -220,7 +230,7 @@ def yf_news(symbol: str) -> None:
     except Exception as e:
         click.echo(f"Error fetching Yahoo Finance news: {str(e)}")
 
-@click.command()
+@cli.command(name="yf-options")
 @click.argument("symbol")
 @click.option("--expiration", help="Expiration date (YYYY-MM-DD)")
 @click.option("--strikes", default=5, help="Number of strikes above/below current price to show.")
@@ -236,50 +246,16 @@ def yf_options(symbol: str, expiration: str | None, strikes: int) -> None:
             return
         
         click.echo(f"Option Chain for {symbol} (Exp: {data['expiration_date']})")
-        current_price = data.get("current_price", 0.0)
+        current_price = to_float(data.get("current_price"), 0.0)
         click.echo(f"Current Price: {current_price}\n")
         
         click.echo("CALLS:")
-        calls = data.get("calls", [])
-        
-        # Get N strikes below current price (closest first)
-        calls_below = sorted(
-            [c for c in calls if float(c.get('strike', 0)) < current_price],
-            key=lambda x: float(x.get('strike', 0)), 
-            reverse=True
-        )[:strikes]
-        
-        # Get N strikes above current price (closest first)
-        calls_above = sorted(
-            [c for c in calls if float(c.get('strike', 0)) >= current_price],
-            key=lambda x: float(x.get('strike', 0))
-        )[:strikes]
-        
-        # Combine and sort by strike for display
-        selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get('strike', 0)))
-        
+        selected_calls = select_nearby_strikes(data.get("calls", []), current_price, strikes)
         for c in selected_calls:
             click.echo(f"Strike: {c.get('strike')} | Bid: {c.get('bid')} | Ask: {c.get('ask')} | Vol: {c.get('volume')}")
             
         click.echo("\nPUTS:")
-        puts = data.get("puts", [])
-        
-        # Get N strikes below current price (closest first)
-        puts_below = sorted(
-            [p for p in puts if float(p.get('strike', 0)) < current_price],
-            key=lambda x: float(x.get('strike', 0)),
-            reverse=True
-        )[:strikes]
-        
-        # Get N strikes above current price (closest first)
-        puts_above = sorted(
-            [p for p in puts if float(p.get('strike', 0)) >= current_price],
-            key=lambda x: float(x.get('strike', 0))
-        )[:strikes]
-        
-        # Combine and sort by strike for display
-        selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get('strike', 0)))
-        
+        selected_puts = select_nearby_strikes(data.get("puts", []), current_price, strikes)
         for p in selected_puts:
             click.echo(f"Strike: {p.get('strike')} | Bid: {p.get('bid')} | Ask: {p.get('ask')} | Vol: {p.get('volume')}")
             
@@ -303,7 +279,7 @@ def options(symbol: str, expiration: str | None, strikes: int) -> None:
             return
         
         click.echo(f"Option Chain for {symbol} (Exp: {data['expiration_date']})")
-        current_price = data.get("current_price", 0.0)
+        current_price = to_float(data.get("current_price"), 0.0)
         click.echo(f"Current Price: {current_price}\n")
         
         def print_option(opt):
@@ -312,40 +288,12 @@ def options(symbol: str, expiration: str | None, strikes: int) -> None:
                        f"Theta: {opt['theta']:.3f} | Vega: {opt['vega']:.3f}")
 
         click.echo("CALLS:")
-        calls = data.get("calls", [])
-        
-        calls_below = sorted(
-            [c for c in calls if float(c.get('strike', 0)) < current_price],
-            key=lambda x: float(x.get('strike', 0)),
-            reverse=True
-        )[:strikes]
-        
-        calls_above = sorted(
-            [c for c in calls if float(c.get('strike', 0)) >= current_price],
-            key=lambda x: float(x.get('strike', 0))
-        )[:strikes]
-        
-        selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get('strike', 0)))
-        
+        selected_calls = select_nearby_strikes(data.get("calls", []), current_price, strikes)
         for c in selected_calls:
             print_option(c)
             
         click.echo("\nPUTS:")
-        puts = data.get("puts", [])
-        
-        puts_below = sorted(
-            [p for p in puts if float(p.get('strike', 0)) < current_price],
-            key=lambda x: float(x.get('strike', 0)),
-            reverse=True
-        )[:strikes]
-        
-        puts_above = sorted(
-            [p for p in puts if float(p.get('strike', 0)) >= current_price],
-            key=lambda x: float(x.get('strike', 0))
-        )[:strikes]
-        
-        selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get('strike', 0)))
-        
+        selected_puts = select_nearby_strikes(data.get("puts", []), current_price, strikes)
         for p in selected_puts:
             print_option(p)
             

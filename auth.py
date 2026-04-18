@@ -26,20 +26,20 @@ def prompt_credentials() -> tuple[str, str]:
     return username, password
 
 
-def get_credentials() -> tuple[str, str, Optional[str]]:
+def get_credentials(mfa_code: Optional[str] = None) -> tuple[str, str, Optional[str]]:
     load_environment()
     username = os.getenv("ROBINHOOD_USERNAME")
     password = os.getenv("ROBINHOOD_PASSWORD")
-    mfa = os.getenv("ROBINHOOD_MFA")
+    mfa = mfa_code or os.getenv("ROBINHOOD_MFA")
     if not username or not password:
         # Check if we are running in a non-interactive mode (like MCP server)
         if os.getenv("MCP_SERVER_MODE"):
-            raise Exception("Authentication required. Please run 'robin login' from the terminal first.")
+            raise RuntimeError("Authentication required. Please run 'robin login' from the terminal first.")
         username, password = prompt_credentials()
     return username, password, mfa
 
 
-def get_session() -> dict[str, str]:
+def get_session(mfa_code: Optional[str] = None) -> dict[str, str]:
     """Return a cached session or log in to Robinhood."""
     if SESSION_CACHE.exists():
         try:
@@ -53,7 +53,7 @@ def get_session() -> dict[str, str]:
             return data
         except json.JSONDecodeError:
             SESSION_CACHE.unlink()
-    username, password, mfa = get_credentials()
+    username, password, mfa = get_credentials(mfa_code)
     session = rh.login(username, password, mfa_code=mfa)
     SESSION_CACHE.parent.mkdir(parents=True, exist_ok=True)
     SESSION_CACHE.write_text(json.dumps(session))

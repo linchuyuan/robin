@@ -23,6 +23,8 @@ from quant import calculate_greeks
 from pretrade_policy import evaluate_pretrade_policy
 from mcp_reddit_tools import register_reddit_tools
 from mcp_quant_tools import register_quant_tools
+from mcp_kalshi_tools import register_kalshi_tools
+from option_utils import select_nearby_strikes, to_float, to_int
 
 import robin_stocks.robinhood as rh
 
@@ -30,6 +32,7 @@ import robin_stocks.robinhood as rh
 mcp = FastMCP("Robinhood")
 register_reddit_tools(mcp)
 register_quant_tools(mcp)
+register_kalshi_tools(mcp)
 
 
 def _extract_api_error(payload) -> str | None:
@@ -540,49 +543,30 @@ def get_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> dic
         get_session()
         data = fetch_option_chain(symbol, expiration_date)
 
-        current_price = float(data.get("current_price", 0.0) or 0.0)
+        current_price = to_float(data.get("current_price"), 0.0)
         calls = data.get("calls", [])
         puts = data.get("puts", [])
 
         # Calculate aggregate stats on the full chain (before filtering) for sentiment
-        total_call_vol = sum(int(c.get("volume") or 0) for c in calls)
-        total_put_vol = sum(int(p.get("volume") or 0) for p in puts)
-        total_call_oi = sum(int(c.get("open_interest") or 0) for c in calls)
-        total_put_oi = sum(int(p.get("open_interest") or 0) for p in puts)
+        total_call_vol = sum(to_int(c.get("volume"), 0) for c in calls)
+        total_put_vol = sum(to_int(p.get("volume"), 0) for p in puts)
+        total_call_oi = sum(to_int(c.get("open_interest"), 0) for c in calls)
+        total_put_oi = sum(to_int(p.get("open_interest"), 0) for p in puts)
 
         vol_pcr = round(total_put_vol / total_call_vol, 4) if total_call_vol > 0 else None
         oi_pcr = round(total_put_oi / total_call_oi, 4) if total_call_oi > 0 else None
 
-        calls_below = sorted(
-            [c for c in calls if float(c.get("strike", 0) or 0) < current_price],
-            key=lambda x: float(x.get("strike", 0) or 0),
-            reverse=True,
-        )[:strikes]
-        calls_above = sorted(
-            [c for c in calls if float(c.get("strike", 0) or 0) >= current_price],
-            key=lambda x: float(x.get("strike", 0) or 0),
-        )[:strikes]
-        selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get("strike", 0) or 0))
-
-        puts_below = sorted(
-            [p for p in puts if float(p.get("strike", 0) or 0) < current_price],
-            key=lambda x: float(x.get("strike", 0) or 0),
-            reverse=True,
-        )[:strikes]
-        puts_above = sorted(
-            [p for p in puts if float(p.get("strike", 0) or 0) >= current_price],
-            key=lambda x: float(x.get("strike", 0) or 0),
-        )[:strikes]
-        selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get("strike", 0) or 0))
+        selected_calls = select_nearby_strikes(calls, current_price, strikes)
+        selected_puts = select_nearby_strikes(puts, current_price, strikes)
 
         def fmt_line(opt: dict) -> str:
             return (
-                f"Strike: {opt.get('strike')} | Bid: {float(opt.get('bid', 0) or 0):.2f} | "
-                f"Ask: {float(opt.get('ask', 0) or 0):.2f} | Mid: {float(opt.get('price', 0) or 0):.2f} | "
-                f"IV: {float(opt.get('implied_volatility', 0) or 0):.2f} | Vol: {opt.get('volume')} | "
-                f"OI: {opt.get('open_interest')} | Delta: {float(opt.get('delta', 0) or 0):.3f} | "
-                f"Gamma: {float(opt.get('gamma', 0) or 0):.3f} | Theta: {float(opt.get('theta', 0) or 0):.3f} | "
-                f"Vega: {float(opt.get('vega', 0) or 0):.3f}"
+                f"Strike: {opt.get('strike')} | Bid: {to_float(opt.get('bid'), 0):.2f} | "
+                f"Ask: {to_float(opt.get('ask'), 0):.2f} | Mid: {to_float(opt.get('price'), 0):.2f} | "
+                f"IV: {to_float(opt.get('implied_volatility'), 0):.2f} | Vol: {opt.get('volume')} | "
+                f"OI: {opt.get('open_interest')} | Delta: {to_float(opt.get('delta'), 0):.3f} | "
+                f"Gamma: {to_float(opt.get('gamma'), 0):.3f} | Theta: {to_float(opt.get('theta'), 0):.3f} | "
+                f"Vega: {to_float(opt.get('vega'), 0):.3f}"
             )
 
         lines = [
@@ -769,15 +753,15 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
                 "result_text": f"Error: {msg}",
             }
 
-        current_price = float(data.get("current_price", 0.0) or 0.0)
+        current_price = to_float(data.get("current_price"), 0.0)
         calls = data.get("calls", [])
         puts = data.get("puts", [])
 
         # Calculate aggregate stats on the full chain (before filtering) for sentiment
-        total_call_vol = sum(int(c.get("volume") or 0) for c in calls)
-        total_put_vol = sum(int(p.get("volume") or 0) for p in puts)
-        total_call_oi = sum(int(c.get("openInterest") or 0) for c in calls)
-        total_put_oi = sum(int(p.get("openInterest") or 0) for p in puts)
+        total_call_vol = sum(to_int(c.get("volume"), 0) for c in calls)
+        total_put_vol = sum(to_int(p.get("volume"), 0) for p in puts)
+        total_call_oi = sum(to_int(c.get("openInterest"), 0) for c in calls)
+        total_put_oi = sum(to_int(p.get("openInterest"), 0) for p in puts)
 
         vol_pcr = round(total_put_vol / total_call_vol, 4) if total_call_vol > 0 else None
         oi_pcr = round(total_put_oi / total_call_oi, 4) if total_call_oi > 0 else None
@@ -797,30 +781,14 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
         risk_free_rate = 0.045
         dividend_yield = 0.0
 
-        def _to_float(value, default=0.0):
-            try:
-                if value in ("", None):
-                    return float(default)
-                return float(value)
-            except (TypeError, ValueError):
-                return float(default)
-
-        def _to_int(value, default=0):
-            try:
-                if value in ("", None):
-                    return int(default)
-                return int(float(value))
-            except (TypeError, ValueError):
-                return int(default)
-
         def _normalize_option(opt: dict, option_side: str) -> dict:
-            bid = _to_float(opt.get("bid"), 0.0)
-            ask = _to_float(opt.get("ask"), 0.0)
-            last = _to_float(opt.get("lastPrice"), 0.0)
+            bid = to_float(opt.get("bid"), 0.0)
+            ask = to_float(opt.get("ask"), 0.0)
+            last = to_float(opt.get("lastPrice"), 0.0)
             mid = round((bid + ask) / 2, 4) if bid > 0 and ask > 0 else last
             
-            strike = _to_float(opt.get("strike"), 0.0)
-            iv = _to_float(opt.get("impliedVolatility"), 0.0)
+            strike = to_float(opt.get("strike"), 0.0)
+            iv = to_float(opt.get("impliedVolatility"), 0.0)
 
             # Calculate Greeks if we have valid inputs
             greeks = {k: None for k in ["delta", "gamma", "theta", "vega", "rho"]}
@@ -840,8 +808,8 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
                 "price": mid,
                 "bid": bid,
                 "ask": ask,
-                "volume": _to_int(opt.get("volume"), 0),
-                "open_interest": _to_int(opt.get("openInterest"), 0),
+                "volume": to_int(opt.get("volume"), 0),
+                "open_interest": to_int(opt.get("openInterest"), 0),
                 "implied_volatility": iv,
                 "delta": greeks["delta"],
                 "gamma": greeks["gamma"],
@@ -858,15 +826,15 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
             capped_calls = sorted(
                 all_calls,
                 key=lambda x: (
-                    -int(x.get("open_interest", 0) or 0),
-                    float(x.get("strike", 0) or 0),
+                    -to_int(x.get("open_interest"), 0),
+                    to_float(x.get("strike"), 0.0),
                 ),
             )[:fallback_limit]
             capped_puts = sorted(
                 all_puts,
                 key=lambda x: (
-                    -int(x.get("open_interest", 0) or 0),
-                    float(x.get("strike", 0) or 0),
+                    -to_int(x.get("open_interest"), 0),
+                    to_float(x.get("strike"), 0.0),
                 ),
             )[:fallback_limit]
             return {
@@ -903,27 +871,8 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
         norm_calls = [_normalize_option(c, "call") for c in calls]
         norm_puts = [_normalize_option(p, "put") for p in puts]
 
-        calls_below = sorted(
-            [c for c in norm_calls if float(c.get("strike", 0) or 0) < current_price],
-            key=lambda x: float(x.get("strike", 0) or 0),
-            reverse=True,
-        )[:strikes]
-        calls_above = sorted(
-            [c for c in norm_calls if float(c.get("strike", 0) or 0) >= current_price],
-            key=lambda x: float(x.get("strike", 0) or 0),
-        )[:strikes]
-        selected_calls = sorted(calls_below + calls_above, key=lambda x: float(x.get("strike", 0) or 0))
-
-        puts_below = sorted(
-            [p for p in norm_puts if float(p.get("strike", 0) or 0) < current_price],
-            key=lambda x: float(x.get("strike", 0) or 0),
-            reverse=True,
-        )[:strikes]
-        puts_above = sorted(
-            [p for p in norm_puts if float(p.get("strike", 0) or 0) >= current_price],
-            key=lambda x: float(x.get("strike", 0) or 0),
-        )[:strikes]
-        selected_puts = sorted(puts_below + puts_above, key=lambda x: float(x.get("strike", 0) or 0))
+        selected_calls = select_nearby_strikes(norm_calls, current_price, strikes)
+        selected_puts = select_nearby_strikes(norm_puts, current_price, strikes)
 
         lines = [
             f"Option Chain for {symbol} (Exp: {data.get('expiration_date')})",
@@ -931,13 +880,13 @@ def get_yf_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> 
             "",
             "CALLS:",
             *[
-                f"Strike: {c.get('strike')} | Bid: {float(c.get('bid', 0) or 0):.2f} | Ask: {float(c.get('ask', 0) or 0):.2f} | Vol: {c.get('volume')} | OI: {c.get('open_interest')}"
+                f"Strike: {c.get('strike')} | Bid: {to_float(c.get('bid'), 0):.2f} | Ask: {to_float(c.get('ask'), 0):.2f} | Vol: {c.get('volume')} | OI: {c.get('open_interest')}"
                 for c in selected_calls
             ],
             "",
             "PUTS:",
             *[
-                f"Strike: {p.get('strike')} | Bid: {float(p.get('bid', 0) or 0):.2f} | Ask: {float(p.get('ask', 0) or 0):.2f} | Vol: {p.get('volume')} | OI: {p.get('open_interest')}"
+                f"Strike: {p.get('strike')} | Bid: {to_float(p.get('bid'), 0):.2f} | Ask: {to_float(p.get('ask'), 0):.2f} | Vol: {p.get('volume')} | OI: {p.get('open_interest')}"
                 for p in selected_puts
             ],
         ]

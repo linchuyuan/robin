@@ -1,253 +1,369 @@
-# Robinhood CLI
+# Robin
 
-A lightweight Python CLI for placing orders on Robinhood with a safety-first workflow. The CLI provides commands for authentication, order placement, portfolio introspection, and session management while keeping sensitive data out of source control.
+Robin is a local Python trading assistant toolkit for Robinhood accounts. It has two main entry points:
 
-## Design Overview
+- `cli.py`: a Click command-line interface for account, portfolio, order, quote, news, options, crypto, sentiment, macro, and market-session tasks.
+- `server.py`: a FastMCP server that exposes the same broker and market-data functions to AI agents as structured JSON tools.
 
-- **Command structure:** Built with `click` for clearly named commands and shared options. Each command calls into a small domain layer (`auth`, `order`, `portfolio`) so the CLI stays thin.
-- **Session management:** Authentication is cached in `~/.robinhood-cli/session.json` with explicit login/logout helpers; each command checks for a valid session before running.
-- **Order safety:** All trade commands require explicit confirmation (`--yes`) for sells or when the order size is large. Limit orders require providing a price, and market orders optionally log the current quote for review.
-- **Extensible helpers:** Utility modules expose helpers for quoting, validating symbols, and formatting responses so additional commands (e.g., `watch`, `history`) can be added without duplicating logic.
+The project also includes Reddit sentiment tools, quant/technical-analysis tools, economic calendar helpers, and a walk-forward backtest engine for testing a simple scoring strategy.
+
+This is not a fully automated trading bot by itself. The implementation is designed as a broker/data access layer with explicit order submission calls and pre-trade policy checks on MCP order execution.
+
+## What Is Implemented
+
+| Area | Files | What it does |
+| --- | --- | --- |
+| Authentication | `auth.py` | Loads `.env`, reads Robinhood credentials, caches the Robinhood session in `~/.robinhood-cli/session.json`, and supports logout. |
+| CLI | `cli.py`, `robin.bat` | Provides terminal commands for Robinhood, Yahoo Finance, crypto, options, sentiment, macro news, and market status. |
+| MCP server | `server.py`, `mcp_reddit_tools.py`, `mcp_quant_tools.py`, `mcp_kalshi_tools.py`, `start_mcp.bat`, `mcp_config.json` | Runs a FastMCP server over stdio, SSE, HTTP, or streamable HTTP. Tools return JSON plus `result_text` for LLM-friendly summaries. |
+| Stock account data | `account.py`, `portfolio.py`, `market_data.py`, `order_history.py`, `orders.py` | Fetches account profile, positions, quotes, news, history, open orders, order details, and submits/cancels stock orders. |
+| Options and crypto | `robin_options.py`, `crypto.py`, `yahoo_finance.py`, `option_utils.py` | Fetches Robinhood/Yahoo option chains, normalizes option-chain values, calculates Greeks for Robinhood chains, fetches crypto quotes/holdings, and submits crypto orders. |
+| Risk guardrails | `pretrade_policy.py` | Blocks MCP stock buys when configured account, exposure, session, pending-order, hard-exclude, or Reddit sentiment checks fail. |
+| Market context | `sentiment.py`, `market_calendar.py`, `macro_news.py`, `economic_events.py` | Fetches Fear & Greed, VIX, yield curve, market breadth, market sessions/holidays, macro headlines, and economic events. |
+| Reddit data | `reddit_data.py`, `reddit_sentiment.py` | Fetches Reddit posts/comments and computes ticker mentions, normalized sentiment snapshots, hype risk, and trending tickers. |
+| Kalshi data | `kalshi.py`, `mcp_kalshi_tools.py` | Browses public Kalshi prediction markets for global, economic, macro, and stock-ticker context. This is read-only market-data access. |
+| Quant research | `quant.py`, `backtest_engine.py` | Calculates indicators, IV rank, unusual options activity, risk/correlation metrics, peer candidates, and strategy backtests. |
 
 ## Installation
 
-1. Create and activate a virtual environment (recommended).
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+Create a virtual environment, then install dependencies:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+On Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
 
 ## Configuration
 
-1. Export credentials in your shell or via a `.env` file (never commit this file):
-   ```bash
-   export ROBINHOOD_USERNAME="alice@example.com"
-   export ROBINHOOD_PASSWORD="supersecret"
-   export ROBINHOOD_MFA="123456"
-   # Optional for Reddit tools: if omitted, CLI/MCP will use public Reddit JSON mode
-   export REDDIT_CLIENT_ID="your_reddit_app_client_id"
-   export REDDIT_CLIENT_SECRET="your_reddit_app_client_secret"
-   export REDDIT_USER_AGENT="robin-mcp/1.0 by <reddit_username>"
-   ```
-2. The CLI reads these values via `python-dotenv` (if a `.env` is present) and falls back to environment variables. If either the username or password is missing, the CLI will prompt you interactively.
-3. A cached session token (with TTL) is stored at `~/.robinhood-cli/session.json`. Delete it or run `python cli.py logout` to purge credentials.
+Robin reads credentials from environment variables or a local `.env` file:
 
-## CLI Commands
+```bash
+ROBINHOOD_USERNAME=alice@example.com
+ROBINHOOD_PASSWORD=supersecret
+ROBINHOOD_MFA=123456
+```
+
+If `ROBINHOOD_USERNAME` or `ROBINHOOD_PASSWORD` is missing, the CLI prompts interactively. In MCP server mode (`MCP_SERVER_MODE=1`), missing credentials raise an error instead of prompting.
+
+Optional Reddit API credentials:
+
+```bash
+REDDIT_CLIENT_ID=your_reddit_app_client_id
+REDDIT_CLIENT_SECRET=your_reddit_app_client_secret
+REDDIT_USER_AGENT=robin-mcp/1.0 by <reddit_username>
+```
+
+If Reddit credentials are omitted, the Reddit helpers fall back to public Reddit JSON endpoints where possible.
+
+Optional pre-trade policy variables:
+
+```bash
+ROBIN_MAX_DAILY_LOSS_PCT=0.03
+ROBIN_MAX_ORDER_NOTIONAL_PCT=0.15
+ROBIN_MAX_SYMBOL_EXPOSURE_PCT=0.30
+ROBIN_MAX_PENDING_ORDERS_PER_SYMBOL=3
+ROBIN_ENABLE_SENTIMENT_GUARDRAIL=1
+ROBIN_SENTIMENT_FAIL_CLOSED=1
+ROBIN_SENTIMENT_CONFIDENCE_FLOOR=0.45
+ROBIN_ENABLE_HARD_EXCLUDE=1
+ROBIN_HARD_EXCLUDE_SYMBOLS=AMD,AVGO,CEG,GOOG,NVDA,SLV
+```
+
+Optional economic calendar variables:
+
+```bash
+ROBIN_ECON_CALENDAR_URL=https://nfs.faireconomy.media/ff_calendar_thisweek.json
+ROBIN_ECON_CACHE_PATH=/tmp/robin_economic_events_cache.json
+ROBIN_ECON_CACHE_TTL_SECONDS=3600
+ROBIN_ECON_TIMEOUT_SECONDS=8
+```
+
+Optional Kalshi variables:
+
+```bash
+KALSHI_API_BASE_URL=https://api.elections.kalshi.com/trade-api/v2
+KALSHI_TIMEOUT_SECONDS=8
+```
+
+Kalshi market-data tools use public unauthenticated endpoints. No Kalshi trading credentials are used or needed.
+
+Do not commit `.env` or session files.
+
+## CLI Usage
+
+Run commands directly:
+
+```bash
+python cli.py --help
+python cli.py quote AAPL
+python cli.py order AAPL --qty 1 --side buy --order-type market
+```
+
+On Windows, the wrapper forwards arguments to `cli.py`:
+
+```powershell
+.\robin.bat quote AAPL
+.\robin.bat market-status
+```
+
+Current CLI commands:
 
 | Command | Description |
 | --- | --- |
-| `python cli.py login` | Authenticate with Robinhood and cache the session. Use `--mfa` to provide a one-time password. |
-| `python cli.py logout` | Clear cached credentials and logout from Robinhood. |
-| `python cli.py order SYMBOL --qty 1 --side buy --order-type market` | Place a market or limit order. Market orders can optionally log the latest quote before submission. Limit orders require `--price`. |
-| `python cli.py quote SYMBOL` | Fetch the latest price and 52-week range before trading. |
-| `python cli.py portfolio` | List current positions with detailed P/L metrics (Today's P/L, Total P/L, Equity). |
-| `python cli.py cancel ORDER_ID` | Cancel a pending order. |
-| `python cli.py history SYMBOL` | Fetch historical price data. Use `--span` (default: week) and `--interval` (default: day) to customize. |
-| `python cli.py news SYMBOL` | Fetch recent news articles for a stock. |
-| `python cli.py orders` | List all pending/open orders. |
-| `python cli.py history-orders` | List the last 10 stock orders (open or closed) with their Order IDs. |
-| `python cli.py order-detail ORDER_ID` | Show detailed information for a specific order. You can get the `ORDER_ID` from the `history-orders` command output. |
-| `python cli.py account` | Show account buying power, cash balance, and total equity. |
-| `python cli.py crypto-quote SYMBOL` | Fetch crypto quote (e.g. BTC). |
-| `python cli.py crypto-holdings` | List current crypto positions. |
-| `python cli.py crypto-order SYMBOL --qty 0.1 --side buy` | Place a crypto order. |
-| `python cli.py yf-quote SYMBOL` | Fetch real-time quote via Yahoo Finance. |
-| `python cli.py yf-news SYMBOL` | Fetch latest news via Yahoo Finance. |
-| `python cli.py options SYMBOL` | Fetch option chain data from Robinhood (with Greeks). Use `--expiration` (required) and `--strikes` (default: 5) to control depth. |
-| `python cli.py yf-options SYMBOL` | View option chains via Yahoo Finance. Use `--expiration` (required) and `--strikes` (default: 5) to control depth. |
-| `python cli.py fundamentals SYMBOL` | Fetch key fundamental stats (P/E, Market Cap, 52-week range, Volume, Sector, etc.). |
-| `python cli.py sentiment` | Get market sentiment (Fear & Greed Index, VIX). |
-| `python cli.py macro` | Get aggregated latest macroeconomic news from Investing.com, Bloomberg, and CNBC. Supports `--limit` (default: 10) and `--today`. |
-| `python cli.py market-status` | Show current market session (pre-market, regular, after-hours, closed), today's schedule, and next open/close. Use `--holidays` or `--early-closes` for calendar info. |
+| `python cli.py login --mfa 123456` | Authenticate and cache a Robinhood session. MFA can be passed with `--mfa` or via `ROBINHOOD_MFA`. |
+| `python cli.py logout` | Clear the cached Robinhood session and call Robinhood logout. |
+| `python cli.py order SYMBOL --qty 1 --side buy --order-type market` | Submit a stock market or limit order. CLI order types are `market` and `limit`; limit orders require `--price`. Sells prompt unless `--yes` is passed. |
+| `python cli.py quote SYMBOL` | Fetch a Robinhood stock quote. |
+| `python cli.py portfolio` | List current stock positions with quantity, price, equity, average cost, daily P/L, total P/L, P/E, market cap, and 52-week range. |
+| `python cli.py orders` | List open stock orders. |
+| `python cli.py cancel ORDER_ID` | Request cancellation for a stock order. |
+| `python cli.py history SYMBOL --span week --interval day` | Fetch Robinhood historical candles. |
+| `python cli.py news SYMBOL` | Fetch Robinhood news articles. |
+| `python cli.py yf-quote SYMBOL` | Fetch a Yahoo Finance quote. |
+| `python cli.py yf-news SYMBOL` | Fetch Yahoo Finance news. |
+| `python cli.py yf-options SYMBOL` | List Yahoo option expirations when `--expiration` is omitted; otherwise show a Yahoo option chain. |
+| `python cli.py options SYMBOL` | List Robinhood option expirations when `--expiration` is omitted; otherwise show a chain with Greeks. |
+| `python cli.py account` | Show buying power, cash balances, total equity, and market value. |
+| `python cli.py crypto-quote SYMBOL` | Fetch a Robinhood crypto quote, for example `BTC`. |
+| `python cli.py crypto-holdings` | List crypto positions. |
+| `python cli.py crypto-order SYMBOL --qty 0.1 --side buy` | Submit a crypto market or limit order. Limit orders require `--price`; confirmation is required unless `--yes` is passed. |
+| `python cli.py history-orders` | Show the 10 most recent stock orders. |
+| `python cli.py order-detail ORDER_ID` | Show detailed stock order information. |
+| `python cli.py fundamentals SYMBOL` | Fetch Robinhood fundamental data. |
+| `python cli.py sentiment` | Show Fear & Greed and VIX data. |
+| `python cli.py macro --limit 10 --today` | Show aggregated macroeconomic headlines. |
+| `python cli.py market-status` | Show current market session, schedule, next open/close, holidays, or early closes. |
 
-Each command shares common options via a decorator (e.g., `--debug`, `--dry-run`) so the user can preview requests without submitting them.
+Global CLI options:
 
-## MCP Server (AI Agent Skills)
-
-This project includes a Model Context Protocol (MCP) server, allowing AI agents (like Claude Desktop) to interact with your Robinhood account.
-
-### Capabilities
-- **Portfolio Management:** Get current positions and account buying power.
-- **Trading:** Place market/limit orders and cancel pending orders.
-- **Market Data:** Fetch quotes, news, history, and option chains (via Yahoo Finance).
-- **Pre-Trade Safety:** Policy checks (buying power, exposure, pending-order limits, session/risk guardrails) run before stock order submission.
-  - Includes account-level daily loss guard using equity vs previous close when available.
-  - Sentiment guardrail supports fail-closed mode via `ROBIN_SENTIMENT_FAIL_CLOSED=1` (default).
-
-### Response format (LLM-friendly)
-All MCP tools return **JSON** (not plain text). Each response includes:
-- **Structured data** (e.g. `positions`, `orders`, `quote`, `profile`) for parsing and reasoning.
-- **`result_text`**: a short human-readable summary for the model to cite or summarize.
-- **`error`**: set when the call failed, with a descriptive message.
-- For mutating tools (for example `execute_order`, `execute_crypto_order`, `cancel_order`), a **`success`** boolean is included.
-- `execute_order` responses include a **`policy`** object summarizing pre-trade checks.
-
-This keeps outputs consistent and easy for agents to consume (e.g. via `mcporter call … --output json`). Symbol parameters are validated (1–5 uppercase letters) for stock history and order tools; invalid symbols return a clear `error` without calling the broker.
-
-### End-to-end with skills (watchlist → portfolio-agent → daily-review)
-The MCP is the data and execution layer for the quant trading flow: **watchlist** refreshes ideas into `memory/watchlist.json`; **portfolio-agent** reads watchlist, params, and learning-state, passes regime and pre-trade checks, and calls MCP for quotes, sentiment, history, and orders; **daily-review** uses order history and account/equity snapshots to label outcomes and update learning-state. Key MCP hooks:
-- **`get_market_sentiment`**: returns `fear_greed_score` (0–100), `vix_value`, and **`regime_classification`** (`risk_off` | `risk_on` | `neutral`) for regime-conditional score thresholds.
-- **`get_account_info`**: profile includes **`equity_previous_close`** for daily drawdown and circuit-breaker logic.
-- **`get_stock_history(symbol="SPY", span="month", interval="day")`**: use for 20-day SPY return (e.g. SPY underperformance kill-switch).
-
-### Usage
-1. Configure your MCP client (e.g., Claude Desktop, MCPorter) to point to the server.
-
-   **Standard MCP Config (stdio transport):**
-   Add this to your client's config file (e.g., `%APPDATA%\Claude\claude_desktop_config.json`):
-   ```json
-   {
-     "mcpServers": {
-       "robinhood": {
-         "command": "c:\\absolute\\path\\to\\robin\\start_mcp.bat",
-         "args": ["--transport", "stdio"]
-       }
-     }
-   }
-   ```
-   *Note: I have created a sample `mcp_config.json` in the root of this project that you can copy from. Update the path to match your actual location.*
-
-   **HTTP Transport (recommended):**
-   If running the server manually (`.\start_mcp.bat`), it defaults to streamable HTTP at `http://127.0.0.1:8000/messages`.
-   ```json
-   {
-     "mcpServers": {
-       "robinhood": {
-         "url": "http://127.0.0.1:8000/messages"
-       }
-     }
-   }
-   ```
-
-2. Start the MCP server:
-   ```powershell
-   .\start_mcp.bat
-   ```
-   (Only needed if using HTTP transport or manual testing)
-
-### Deploying to another compute node
-
-**Packaging (on your dev/source machine)**
-
-1. From the `robin` repo root, build the bundle (set `SKILLS_DIR` to your skills tree, e.g. `clawd/skills`):
-   ```bash
-   SKILLS_DIR=/path/to/clawd/skills ./scripts/build_openclaw_bundle.sh
-   ```
-2. Copy the created tarball to the new server, e.g.:
-   ```bash
-   scp dist/fulldeploy-YYYYMMDD-HHMMSS.tar.gz user@new-server:/tmp/
-   ```
-
-**Deploy (on the new server)**
-
-3. Extract the tarball once (e.g. to `/tmp`) so you can run the configure script at the bundle root; the script will install into `/opt/openclaw` (or your chosen install root).
-4. Run the configure script:
-   ```bash
-   tar -xzf /tmp/fulldeploy-YYYYMMDD-HHMMSS.tar.gz -C /tmp
-   chmod +x /tmp/openclaw_bundle/configure_openclaw_node.sh
-   /tmp/openclaw_bundle/configure_openclaw_node.sh /tmp/fulldeploy-YYYYMMDD-HHMMSS.tar.gz /opt/openclaw
-   ```
-   Or from a `robin` repo checkout: `./scripts/configure_openclaw_node.sh /tmp/fulldeploy-*.tar.gz /opt/openclaw`
-   When prompted, complete Codex OAuth (browser) and WhatsApp channel login (QR or pairing).
-5. (Optional) Set env vars before step 4 if you want a cron job or different WhatsApp/auth behavior, e.g.:
-   ```bash
-   OPENCLAW_CRON_NAME="Morning brief" \
-   OPENCLAW_CRON_EXPR="0 7 * * *" \
-   OPENCLAW_CRON_TZ="America/Los_Angeles" \
-   OPENCLAW_CRON_MESSAGE="Summarize overnight updates and portfolio risk." \
-   ./scripts/configure_openclaw_node.sh /tmp/fulldeploy-*.tar.gz /opt/openclaw
-   ```
-6. Start the stack (Robin MCP + OpenClaw gateway):
-   ```bash
-   /opt/openclaw/start_openclaw_stack.sh
-   ```
-
-Useful env vars: `PYTHON_EXE`, `ROBIN_MCP_HOST`, `ROBIN_MCP_PORT`, `WHATSAPP_DM_POLICY`, `WHATSAPP_ALLOW_FROM`, `RUN_CODEX_OAUTH`, `RUN_WHATSAPP_LOGIN`.
-
-**What the configure script does:**
-
-- installs `openclaw@latest` via npm
-- installs `mcporter@latest` (required by the `robinhood` skill)
-- untars the Robin MCP server bundle
-- moves the packaged skills into `~/.openclaw/workspace/skills`
-- writes `~/.openclaw/workspace/config/mcporter.json`
-- writes `~/.openclaw/openclaw.json` with WhatsApp channel policy
-- runs OpenClaw Codex OAuth login and WhatsApp login (interactive unless disabled)
-- optionally registers an OpenClaw cron job if `OPENCLAW_CRON_*` variables are provided
-
-### Tools Available
-- `get_portfolio`: List open positions with detailed P/L metrics.
-- `get_account_info`: View buying power, cash, and total equity.
-- `get_pending_orders`: List open orders.
-- `get_stock_order_history`: List recent stock orders.
-- `get_order_details`: Get full details of an order by ID.
-- `execute_order`: Place buy/sell orders.
-- `cancel_order`: Cancel a specific order.
-- `get_stock_news` / `get_yf_stock_news`: Get latest news.
-- `get_stock_history`: Get historical price data.
-- `get_yf_stock_quote`: Get real-time quote (Yahoo).
-- `get_yf_option_expirations`: Get available Yahoo option expiration dates for a symbol (plus nearest expiration). Preferred helper before Yahoo chain fetches.
-- `get_yf_option_chain`: Get option chain (Yahoo). Requires `expiration_date`; supports `strikes` parameter. Preferred default in this setup.
-- `get_option_expirations`: Get available Robinhood option expiration dates for a symbol (plus nearest expiration). Use when falling back to Robinhood chain.
-- `get_option_chain`: Get option chain with Greeks (Robinhood). Requires `expiration_date`; supports `strikes` parameter. Fallback/confirmatory source.
-- Endpoint priority note: Yahoo-first is only for option-chain fetches; for other categories, prefer Robinhood endpoints.
-- `get_crypto_price`: Get crypto quote.
-- `get_fundamentals`: Get P/E, Market Cap, and other stats (Robinhood).
-- `get_market_sentiment`: Get Fear & Greed Index and VIX; returns `fear_greed_score`, `vix_value`, and `regime_classification` (risk_off | risk_on | neutral) for agent regime logic.
-- `get_macro_news_headlines`: Get aggregated latest macroeconomic news. Supports `limit` and `only_today`.
-- `get_economic_events`: Get upcoming macro calendar events (e.g., CPI, FOMC/Fed minutes/meetings, PCE, GDP, labor releases) with filters for countries, impact, and keywords.
-- `get_market_session`: Get current market session status (pre-market/regular/after-hours/closed), schedule, holidays, and next open/close.
-- `get_earnings_calendar`: Get upcoming earnings dates for one or more symbols (comma-separated).
-- `get_reddit_posts`: Query recent Reddit posts across selected subreddits.
-- `get_reddit_post_comments`: Fetch comments for a specific Reddit post.
-- `get_reddit_symbol_mentions`: Count ticker mentions and context in Reddit posts/comments.
-- `get_reddit_sentiment_snapshot`: Compute normalized Reddit sentiment factors per symbol.
-- `get_reddit_ticker_sentiment`: Compute Reddit sentiment for a manual comma-separated ticker list.
-- `get_reddit_trending_tickers`: Discover fast-rising ticker mentions on Reddit.
-- `get_timestamp`: Get current server timestamp.
-- `get_crypto_holdings`: Get crypto positions.
-- `execute_crypto_order`: Place crypto orders.
-- `get_technical_indicators_tool`: Get calculated technicals (RSI, SMA50/200, ATR, RS-vs-SPY percentile, Returns, Rel Vol, ATR-based sizing) for a symbol.
-- `get_sector_performance_tool`: Get 5-day performance of major sector ETFs.
-- `get_symbol_peers`: Get peer ticker candidates plus sector/industry context.
-- `get_portfolio_correlation_tool`: Get correlation matrix and high-correlation pairs for a list of symbols.
-
-## Execution
-
-On Linux/macOS, you can run the CLI directly:
 ```bash
-./cli.py login
+python cli.py --dry-run order AAPL --qty 1 --side buy
+python cli.py --debug login
 ```
 
-On Windows, use the provided batch wrapper:
+`--dry-run` is implemented for the stock `order` command path.
+
+## MCP Server
+
+Start the server over streamable HTTP:
+
 ```powershell
-.\robin portfolio
-.\robin history AAPL
+.\start_mcp.bat
 ```
 
-## Authentication & Order Flow
+That wrapper sets `MCP_SERVER_MODE=1` and runs:
 
-- `auth.get_session()` reads cached credentials or prompts for them, then logs in with `robin_stocks.robinhood.login`.
-- `order.build_payload()` validates the symbol, side, quantity, order type, and optional limit price before calling Robinhood.
-- All network interactions bubble errors that are caught by the CLI layer to provide user-friendly messages.
+```bash
+python server.py --transport=streamable-http --host=127.0.0.1 --port=8000 --path=/messages
+```
 
-## Security & Best Practices
+You can also run the server directly:
 
-- Do not commit credentials or `.env` to version control. Use `git update-index --skip-worktree .env` if needed.
-- Limit orders must include `--price`; the CLI prevents misuse by failing fast.
-- Confirm large sells with `--yes` or run a `--dry-run` first.
-- Rate-limit calls by reusing the Robinhood session and caching quotes locally when practical.
+```bash
+python server.py --transport streamable-http --host 127.0.0.1 --port 8000 --path /messages
+python server.py --transport stdio
+```
 
-## Development Notes
+Sample MCP client config for HTTP:
 
-- The main modules (`auth.py`, `orders.py`, `portfolio.py`, and `cli.py`) live at the project root, and `cli.py` exposes the `click` group that powers the commands.
-- MCP tool registrations are split by domain (`mcp_reddit_tools.py`, `mcp_quant_tools.py`) and composed in `server.py`.
-- `pretrade_policy.py` centralizes order guardrails used by `execute_order`.
-- `backtest_engine.py` supports single-run and walk-forward protocols:
-  - `python backtest_engine.py --mode single`
-  - `python backtest_engine.py --mode walk-forward --train-days 252 --test-days 63 --step-days 63 --threshold-grid 65,70,75`
-- Tests should mock `robin_stocks` responses where possible.
-- Future features: `python cli.py watch SYMBOL`, price alerts, and portfolio rebalancing helpers.
+```json
+{
+  "mcpServers": {
+    "robinhood": {
+      "url": "http://127.0.0.1:8000/messages"
+    }
+  }
+}
+```
 
-## Last Updated
-2026-02-17
+Sample MCP client config for stdio:
+
+```json
+{
+  "mcpServers": {
+    "robinhood": {
+      "command": "c:\\absolute\\path\\to\\robin\\start_mcp.bat",
+      "args": ["--transport", "stdio"]
+    }
+  }
+}
+```
+
+### MCP Response Contract
+
+MCP tools return dictionaries, not plain text. Successful and failed responses include machine-readable fields plus a short `result_text`. Mutating tools such as `execute_order`, `execute_crypto_order`, and `cancel_order` include `success`. Stock and crypto order responses validate that Robinhood returned an order id before reporting success.
+
+Stock order tools validate symbols, side, quantity, order type, price, stop price, and time-in-force before calling Robinhood.
+
+### MCP Tool Groups
+
+Broker and account tools:
+
+- `get_portfolio`
+- `get_account_info`
+- `get_pending_orders`
+- `get_stock_order_history`
+- `get_order_details`
+- `execute_order`
+- `cancel_order`
+- `get_crypto_price`
+- `get_crypto_holdings`
+- `execute_crypto_order`
+
+Market data and options tools:
+
+- `get_stock_news`
+- `get_stock_history`
+- `get_yf_stock_quote`
+- `get_yf_stock_news`
+- `get_option_expirations`
+- `get_option_chain`
+- `get_yf_option_expirations`
+- `get_yf_option_chain`
+- `get_fundamentals`
+- `get_earnings_calendar`
+
+Macro, calendar, and timestamp tools:
+
+- `get_market_sentiment`
+- `get_macro_news_headlines`
+- `get_economic_events`
+- `get_market_session`
+- `get_timestamp`
+
+Reddit tools:
+
+- `get_reddit_posts`
+- `get_reddit_post_comments`
+- `get_reddit_symbol_mentions`
+- `get_reddit_sentiment_snapshot`
+- `get_reddit_ticker_sentiment`
+- `get_reddit_trending_tickers`
+
+Kalshi tools:
+
+- `get_kalshi_markets`
+- `get_kalshi_market_detail`
+- `get_kalshi_event_detail`
+- `get_kalshi_economic_market_context`
+- `get_kalshi_stock_market_context`
+
+Quant tools:
+
+- `get_technical_indicators_tool`
+- `get_sector_performance_tool`
+- `get_symbol_peers`
+- `get_portfolio_correlation_tool`
+- `get_iv_rank_tool`
+- `get_unusual_options_activity_tool`
+- `get_portfolio_risk_summary_tool`
+
+## Pre-Trade Policy
+
+`execute_order` calls `evaluate_pretrade_policy()` before stock order submission. The policy currently checks:
+
+- Hard-excluded symbols, enabled by default.
+- Account data availability for stock buys.
+- Buying power after pending buy orders.
+- Daily loss limit, using `equity_previous_close` when available, otherwise open-position intraday P/L.
+- Maximum order notional as a percent of account equity.
+- Maximum symbol exposure after the proposed order and pending buys.
+- Maximum open pending stock orders for the same symbol.
+- Market session for stock market buys unless `extended_hours=true`.
+- Reddit sentiment hype-risk guardrail for stock buys.
+
+The policy returns `allowed`, `blocked_by`, `reason`, `checks`, `metrics`, and `limits`. Failed policy checks block MCP order submission before Robinhood is called.
+
+Crypto MCP orders also call the same policy function, but stock-specific checks are bypassed where the implementation marks them as stock-only.
+
+## Backtesting
+
+Run the single-period strategy backtest:
+
+```bash
+python backtest_engine.py --mode single
+```
+
+Run walk-forward validation with threshold tuning:
+
+```bash
+python backtest_engine.py --mode walk-forward --train-days 252 --test-days 63 --step-days 63 --threshold-grid 65,70,75
+```
+
+The backtest uses Yahoo Finance data, SPY as benchmark, next-bar execution, slippage, per-trade commission, max-position sizing, cash buffer, stop losses, Sharpe, information ratio, excess return, and max drawdown.
+
+## Tests
+
+The repository contains lightweight tests for server contracts, quant functions, and pre-trade policy behavior:
+
+```bash
+python -m unittest test_server_contract.py test_pretrade_policy.py test_quant.py test_option_utils.py test_kalshi.py
+```
+
+`test_mcp.py` is an integration-style contract script for MCP tool behavior and may require the server/dependencies/configuration expected by the local environment.
+
+## Deployment Helpers
+
+The `scripts/` directory packages this repo with an OpenClaw skill tree and configures another compute node.
+
+Build a deployment bundle from the repo root:
+
+```bash
+SKILLS_DIR=/path/to/clawd/skills ./scripts/build_openclaw_bundle.sh
+```
+
+Copy the generated tarball to a target machine, then configure the node:
+
+```bash
+tar -xzf /tmp/fulldeploy-YYYYMMDD-HHMMSS.tar.gz -C /tmp
+chmod +x /tmp/openclaw_bundle/configure_openclaw_node.sh
+/tmp/openclaw_bundle/configure_openclaw_node.sh /tmp/fulldeploy-YYYYMMDD-HHMMSS.tar.gz /opt/openclaw
+```
+
+Or from a checkout:
+
+```bash
+./scripts/configure_openclaw_node.sh /tmp/fulldeploy-*.tar.gz /opt/openclaw
+```
+
+Start the installed stack:
+
+```bash
+/opt/openclaw/start_openclaw_stack.sh
+```
+
+Useful deployment variables include:
+
+```bash
+PYTHON_EXE
+ROBIN_MCP_HOST
+ROBIN_MCP_PORT
+WHATSAPP_DM_POLICY
+WHATSAPP_ALLOW_FROM
+RUN_CODEX_OAUTH
+RUN_WHATSAPP_LOGIN
+OPENCLAW_CRON_NAME
+OPENCLAW_CRON_EXPR
+OPENCLAW_CRON_TZ
+OPENCLAW_CRON_MESSAGE
+```
+
+The configure script installs OpenClaw and MCPorter, unpacks the Robin MCP server bundle, installs packaged skills, writes MCP/OpenClaw configuration, runs interactive login steps unless disabled, and can register a cron job when `OPENCLAW_CRON_*` variables are provided.
+
+## Security Notes
+
+- Keep `.env`, Robinhood credentials, Reddit credentials, and session cache files out of version control.
+- Use `--dry-run` before stock CLI orders when checking command shape.
+- MCP stock orders are guarded by `pretrade_policy.py`, but those checks are not a substitute for reviewing every order before execution.
+- Kalshi integration is read-only and is intended to add prediction-market context to the AI stock-trading workflow, not to place Kalshi trades.
+- Network calls depend on third-party APIs and may fail, rate limit, or return incomplete data.
+- Broker and market data can be delayed or unavailable; do not treat tool output as guaranteed real-time execution advice.

@@ -49,7 +49,12 @@ def _is_truthy_env(name: str, default: bool = False) -> bool:
 
 
 def _live_trading_enabled() -> bool:
-    return _is_truthy_env("ROBIN_MCP_ALLOW_LIVE_TRADING", False)
+    mode = os.getenv("ROBIN_MCP_EXECUTION_MODE", "").strip().lower()
+    if mode in {"paper", "simulate", "simulation"}:
+        return False
+    if mode in {"live", "broker"}:
+        return True
+    return _is_truthy_env("ROBIN_MCP_ALLOW_LIVE_TRADING", True)
 
 
 def _memory_dir() -> Path:
@@ -116,7 +121,7 @@ def _paper_order_response(
         "policy": policy,
         "result_text": (
             f"Paper {asset_class} order recorded: {side} {quantity} {symbol} "
-            f"({order_type}). Set ROBIN_MCP_ALLOW_LIVE_TRADING=1 to place live orders."
+            f"({order_type}). Set ROBIN_MCP_EXECUTION_MODE=live to place live orders."
         ),
     }
 
@@ -303,9 +308,9 @@ def cancel_order(order_id: str) -> dict:
                 "order_id": order_id,
                 "paper": True,
                 "live_trading_enabled": False,
-                "error": "Live trading is disabled; refusing to cancel a live broker order.",
+                "error": "Paper execution mode is enabled; refusing to cancel a live broker order.",
                 "result_text": (
-                    "Live trading is disabled. Set ROBIN_MCP_ALLOW_LIVE_TRADING=1 "
+                    "Paper execution mode is enabled. Set ROBIN_MCP_EXECUTION_MODE=live "
                     "only after verifying this is an intended live cancellation."
                 ),
             }

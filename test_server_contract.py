@@ -58,15 +58,16 @@ class TestServerContracts(unittest.TestCase):
         mock_policy.assert_not_called()
         mock_place_crypto_order.assert_not_called()
 
-    @patch.dict("os.environ", {"ROBIN_MCP_ALLOW_LIVE_TRADING": "1"}, clear=False)
     @patch("server.evaluate_pretrade_policy", return_value={"allowed": True, "reason": "ok", "checks": []})
     @patch("server.get_session", return_value=None)
     @patch("server.place_order")
-    def test_execute_order_success_requires_order_id(self, mock_place_order, _mock_session, _mock_policy):
+    def test_execute_order_defaults_to_live_mode(self, mock_place_order, _mock_session, _mock_policy):
         mock_place_order.return_value = {"id": "abc-123", "state": "queued"}
-        result = server.execute_order.fn("AAPL", 1, "buy")
+        with patch.dict("os.environ", {}, clear=True):
+            result = server.execute_order.fn("AAPL", 1, "buy")
         self.assertIsInstance(result, dict)
         self.assertTrue(result.get("success"))
+        self.assertFalse(result.get("paper", False))
         self.assertEqual(result.get("order_id"), "abc-123")
         self.assertIn("result_text", result)
         self.assertIn("policy", result)
@@ -74,13 +75,13 @@ class TestServerContracts(unittest.TestCase):
     @patch("server.evaluate_pretrade_policy", return_value={"allowed": True, "reason": "ok", "checks": []})
     @patch("server.get_session", return_value=None)
     @patch("server.place_order")
-    def test_execute_order_defaults_to_paper_mode(self, mock_place_order, _mock_session, _mock_policy):
+    def test_execute_order_uses_paper_mode_when_explicit(self, mock_place_order, _mock_session, _mock_policy):
         with tempfile.TemporaryDirectory() as tmp:
             paper_file = f"{tmp}/paper-orders.json"
             with patch.dict(
                 "os.environ",
                 {
-                    "ROBIN_MCP_ALLOW_LIVE_TRADING": "0",
+                    "ROBIN_MCP_EXECUTION_MODE": "paper",
                     "ROBIN_PAPER_ORDER_FILE": paper_file,
                 },
                 clear=False,

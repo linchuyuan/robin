@@ -86,8 +86,12 @@ ROBIN_HARD_EXCLUDE_SYMBOLS=AMD,AVGO,CEG,GOOG,NVDA,SLV
 Optional MCP execution safety variables:
 
 ```bash
-# Default is 0: MCP execute/cancel tools record paper orders instead of touching the broker.
-ROBIN_MCP_ALLOW_LIVE_TRADING=0
+# Default is live broker execution for MCP mutating tools.
+# Set to paper only for simulation/testing.
+ROBIN_MCP_EXECUTION_MODE=live  # live | paper
+
+# Legacy override: set to 0 to force paper mode.
+ROBIN_MCP_ALLOW_LIVE_TRADING=1
 
 # Use the Clawd workspace memory tree for paper orders, drift, traces, and params.
 CLAWD_MEMORY_DIR=/path/to/clawd/memory
@@ -96,7 +100,7 @@ CLAWD_MEMORY_DIR=/path/to/clawd/memory
 ROBIN_PAPER_ORDER_FILE=/path/to/paper-orders.json
 ```
 
-Set `ROBIN_MCP_ALLOW_LIVE_TRADING=1` only for a deliberately live session. The CLI remains separate; this guard applies to MCP mutating tools.
+Set `ROBIN_MCP_EXECUTION_MODE=paper` or `ROBIN_MCP_ALLOW_LIVE_TRADING=0` for simulation. The CLI remains separate; this setting applies to MCP mutating tools.
 
 Optional economic calendar variables:
 

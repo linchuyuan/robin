@@ -83,6 +83,21 @@ ROBIN_ENABLE_HARD_EXCLUDE=1
 ROBIN_HARD_EXCLUDE_SYMBOLS=AMD,AVGO,CEG,GOOG,NVDA,SLV
 ```
 
+Optional MCP execution safety variables:
+
+```bash
+# Default is 0: MCP execute/cancel tools record paper orders instead of touching the broker.
+ROBIN_MCP_ALLOW_LIVE_TRADING=0
+
+# Use the Clawd workspace memory tree for paper orders, drift, traces, and params.
+CLAWD_MEMORY_DIR=/path/to/clawd/memory
+
+# Optional explicit paper-order ledger override.
+ROBIN_PAPER_ORDER_FILE=/path/to/paper-orders.json
+```
+
+Set `ROBIN_MCP_ALLOW_LIVE_TRADING=1` only for a deliberately live session. The CLI remains separate; this guard applies to MCP mutating tools.
+
 Optional economic calendar variables:
 
 ```bash
@@ -269,8 +284,11 @@ Quant tools:
 - `get_symbol_peers`
 - `get_portfolio_correlation_tool`
 - `get_iv_rank_tool`
-- `get_unusual_options_activity_tool`
-- `get_portfolio_risk_summary_tool`
+- `get_unusual_options_activity_tool` (advanced flow/smile/RR25 signal)
+- `get_unusual_options_activity_basic_tool` (legacy volume/OI and premium-bias summary)
+- `get_portfolio_risk_summary_tool` (advanced VaR/CVaR and risk attribution)
+- `get_portfolio_concentration_summary_tool` (legacy position/sector concentration summary)
+- `get_multi_stock_quotes`
 
 ## Pre-Trade Policy
 

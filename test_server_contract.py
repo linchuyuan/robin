@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+import tempfile
 
 import server
 
@@ -57,6 +58,7 @@ class TestServerContracts(unittest.TestCase):
         mock_policy.assert_not_called()
         mock_place_crypto_order.assert_not_called()
 
+    @patch.dict("os.environ", {"ROBIN_MCP_ALLOW_LIVE_TRADING": "1"}, clear=False)
     @patch("server.evaluate_pretrade_policy", return_value={"allowed": True, "reason": "ok", "checks": []})
     @patch("server.get_session", return_value=None)
     @patch("server.place_order")
@@ -69,6 +71,29 @@ class TestServerContracts(unittest.TestCase):
         self.assertIn("result_text", result)
         self.assertIn("policy", result)
 
+    @patch("server.evaluate_pretrade_policy", return_value={"allowed": True, "reason": "ok", "checks": []})
+    @patch("server.get_session", return_value=None)
+    @patch("server.place_order")
+    def test_execute_order_defaults_to_paper_mode(self, mock_place_order, _mock_session, _mock_policy):
+        with tempfile.TemporaryDirectory() as tmp:
+            paper_file = f"{tmp}/paper-orders.json"
+            with patch.dict(
+                "os.environ",
+                {
+                    "ROBIN_MCP_ALLOW_LIVE_TRADING": "0",
+                    "ROBIN_PAPER_ORDER_FILE": paper_file,
+                },
+                clear=False,
+            ):
+                result = server.execute_order.fn("AAPL", 1, "buy", order_type="limit", price=200)
+
+        self.assertTrue(result.get("success"))
+        self.assertTrue(result.get("paper"))
+        self.assertFalse(result.get("live_trading_enabled"))
+        self.assertTrue(str(result.get("order_id", "")).startswith("paper-"))
+        mock_place_order.assert_not_called()
+
+    @patch.dict("os.environ", {"ROBIN_MCP_ALLOW_LIVE_TRADING": "1"}, clear=False)
     @patch("server.evaluate_pretrade_policy", return_value={"allowed": True, "reason": "ok", "checks": []})
     @patch("server.get_session", return_value=None)
     @patch("server.place_order")
@@ -90,6 +115,7 @@ class TestServerContracts(unittest.TestCase):
         self.assertIn("policy", result)
         mock_place_order.assert_not_called()
 
+    @patch.dict("os.environ", {"ROBIN_MCP_ALLOW_LIVE_TRADING": "1"}, clear=False)
     @patch("server.get_session", return_value=None)
     @patch("server.rh.cancel_stock_order")
     def test_cancel_order_detects_api_error(self, mock_cancel, _mock_session):
@@ -101,6 +127,7 @@ class TestServerContracts(unittest.TestCase):
         self.assertIn("details", result)
         self.assertIn("result_text", result)
 
+    @patch.dict("os.environ", {"ROBIN_MCP_ALLOW_LIVE_TRADING": "1"}, clear=False)
     @patch("server.get_session", return_value=None)
     @patch("server.rh.cancel_stock_order")
     def test_cancel_order_accepts_valid_response(self, mock_cancel, _mock_session):
@@ -110,6 +137,7 @@ class TestServerContracts(unittest.TestCase):
         self.assertEqual(result.get("order_id"), "oid-1")
         self.assertIn("result_text", result)
 
+    @patch.dict("os.environ", {"ROBIN_MCP_ALLOW_LIVE_TRADING": "1"}, clear=False)
     @patch("server.evaluate_pretrade_policy", return_value={"allowed": True, "reason": "ok", "checks": []})
     @patch("server.get_session", return_value=None)
     @patch("server.place_crypto_order")

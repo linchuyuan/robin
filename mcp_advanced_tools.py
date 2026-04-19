@@ -42,6 +42,23 @@ from drift_monitor import record_live_fill, get_drift_report
 from execution_models import estimate_slippage_bps
 
 
+def _memory_dir() -> Path:
+    configured = os.getenv("CLAWD_MEMORY_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    return Path(__file__).parent / "memory"
+
+
+def _workflow_path(path: str) -> Path:
+    p = Path(path).expanduser()
+    if p.is_absolute():
+        return p
+    parts = p.parts
+    if parts and parts[0] == "memory":
+        return _memory_dir().joinpath(*parts[1:])
+    return p
+
+
 def register_advanced_tools(mcp) -> None:
 
     @mcp.tool()
@@ -340,7 +357,7 @@ def register_advanced_tools(mcp) -> None:
             return {"available": False, "reason": "params_files_missing_or_empty"}
 
         # Collect traces
-        traces_dir = Path(trace_dir)
+        traces_dir = _workflow_path(trace_dir)
         if not traces_dir.exists():
             return {"available": False, "reason": f"no_trace_dir: {trace_dir}"}
 
@@ -417,7 +434,7 @@ def register_advanced_tools(mcp) -> None:
 
 def _read_json(path: str) -> dict | None:
     try:
-        p = Path(path)
+        p = _workflow_path(path)
         if not p.exists():
             return None
         return json.loads(p.read_text())

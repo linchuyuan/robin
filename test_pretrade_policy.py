@@ -118,7 +118,7 @@ class TestPretradePolicy(unittest.TestCase):
         },
     )
     @patch("pretrade_policy._first_quote_price", return_value=10.0)
-    def test_hard_exclude_blocks_sell_orders(
+    def test_hard_exclude_blocks_new_buys_only(
         self,
         _mock_quote,
         _mock_account,
@@ -126,7 +126,7 @@ class TestPretradePolicy(unittest.TestCase):
         _mock_orders,
         _mock_market,
     ):
-        result = evaluate_pretrade_policy(
+        sell_result = evaluate_pretrade_policy(
             symbol="CEG",
             qty=1,
             side="sell",
@@ -134,12 +134,23 @@ class TestPretradePolicy(unittest.TestCase):
             price=None,
             extended_hours=False,
         )
-        self.assertFalse(result.get("allowed"))
-        self.assertEqual(result.get("blocked_by"), "hard_exclude_list")
-        checks = result.get("checks", [])
+        self.assertTrue(sell_result.get("allowed"))
+        self.assertFalse(sell_result.get("metrics", {}).get("hard_exclude_hit"))
+
+        buy_result = evaluate_pretrade_policy(
+            symbol="CEG",
+            qty=1,
+            side="buy",
+            order_type="market",
+            price=None,
+            extended_hours=False,
+        )
+        self.assertFalse(buy_result.get("allowed"))
+        self.assertEqual(buy_result.get("blocked_by"), "hard_exclude_list")
+        checks = buy_result.get("checks", [])
         hard_exclude_check = next((item for item in checks if item.get("name") == "hard_exclude_list"), {})
         self.assertEqual(hard_exclude_check.get("status"), "fail")
-        metrics = result.get("metrics", {})
+        metrics = buy_result.get("metrics", {})
         self.assertTrue(metrics.get("hard_exclude_hit"))
 
     @patch.dict("os.environ", {"ROBIN_ENABLE_SENTIMENT_GUARDRAIL": "0"}, clear=False)

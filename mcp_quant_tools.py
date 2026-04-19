@@ -174,7 +174,7 @@ def register_quant_tools(mcp) -> None:
         }
 
     @mcp.tool()
-    def get_unusual_options_activity_tool(symbol: str, expiration_date: str) -> dict:
+    def get_unusual_options_activity_basic_tool(symbol: str, expiration_date: str) -> dict:
         """
         Detect unusual options activity for a symbol at a given expiration.
         Flags strikes with volume/OI ratio > 2x and volume >= 500 contracts.
@@ -231,7 +231,7 @@ def register_quant_tools(mcp) -> None:
             }
 
     @mcp.tool()
-    def get_portfolio_risk_summary_tool() -> dict:
+    def get_portfolio_concentration_summary_tool() -> dict:
         """
         Calculate portfolio-level risk metrics: position weights, sector concentration,
         HHI (Herfindahl index), total unrealized P/L, and concentration risk level.
@@ -348,4 +348,3 @@ def register_quant_tools(mcp) -> None:
             "count": len(quotes),
             "result_text": "\n".join(lines),
         }
-

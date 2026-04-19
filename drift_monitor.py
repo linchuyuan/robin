@@ -26,10 +26,8 @@ except ImportError:
     estimate_slippage_bps = None
 
 
-_DRIFT_FILE = os.getenv(
-    "ROBIN_DRIFT_FILE",
-    str(Path(__file__).parent / "memory" / "live-vs-backtest.json"),
-)
+_MEMORY_DIR = Path(os.getenv("CLAWD_MEMORY_DIR", str(Path(__file__).parent / "memory"))).expanduser()
+_DRIFT_FILE = os.getenv("ROBIN_DRIFT_FILE", str(_MEMORY_DIR / "live-vs-backtest.json"))
 
 
 @contextmanager

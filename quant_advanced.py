@@ -26,7 +26,8 @@ import yfinance as yf
 # Ken French daily factor data URLs (free, stable CSV endpoints)
 _KF_FF5_URL = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Research_Data_5_Factors_2x3_daily_CSV.zip"
 _KF_MOM_URL = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/F-F_Momentum_Factor_daily_CSV.zip"
-_KF_CACHE_DIR = Path(os.getenv("ROBIN_KF_CACHE_DIR", str(Path(__file__).parent / "memory" / "ken_french")))
+_MEMORY_DIR = Path(os.getenv("CLAWD_MEMORY_DIR", str(Path(__file__).parent / "memory"))).expanduser()
+_KF_CACHE_DIR = Path(os.getenv("ROBIN_KF_CACHE_DIR", str(_MEMORY_DIR / "ken_french")))
 _KF_CACHE_TTL_HOURS = 24
 _RIDGE_LAMBDA = 1e-3  # Tikhonov regularization to stabilize near-collinear designs
 

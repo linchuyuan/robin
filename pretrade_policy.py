@@ -129,6 +129,7 @@ def evaluate_pretrade_policy(
         asset_class_lc == "stock"
         and enable_hard_exclude
         and symbol_up in hard_exclude_symbols
+        and side_lc == "buy"
     )
     add_check(
         "hard_exclude_list",

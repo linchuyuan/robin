@@ -1,6 +1,10 @@
 """MCP Server for Robinhood Skills."""
 import argparse
+import json
+import os
 from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
 
 from fastmcp import FastMCP
 from auth import get_session
@@ -35,6 +39,86 @@ register_reddit_tools(mcp)
 register_quant_tools(mcp)
 register_kalshi_tools(mcp)
 register_advanced_tools(mcp)
+
+
+def _is_truthy_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw in ("", None):
+        return bool(default)
+    return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _live_trading_enabled() -> bool:
+    return _is_truthy_env("ROBIN_MCP_ALLOW_LIVE_TRADING", False)
+
+
+def _memory_dir() -> Path:
+    configured = os.getenv("CLAWD_MEMORY_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    return Path(__file__).parent / "memory"
+
+
+def _paper_ledger_path() -> Path:
+    return Path(os.getenv("ROBIN_PAPER_ORDER_FILE", str(_memory_dir() / "paper-orders.json"))).expanduser()
+
+
+def _record_paper_order(payload: dict) -> dict:
+    path = _paper_ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        ledger = json.loads(path.read_text()) if path.exists() else {"orders": []}
+    except Exception:
+        ledger = {"orders": []}
+    ledger.setdefault("orders", []).append(payload)
+    ledger["last_updated_utc"] = payload["created_at_utc"]
+    path.write_text(json.dumps(ledger, indent=2))
+    return {"ledger_path": str(path), "order": payload}
+
+
+def _paper_order_response(
+    *,
+    symbol: str,
+    side: str,
+    quantity: float,
+    order_type: str,
+    asset_class: str,
+    price: float | None = None,
+    stop_price: float | None = None,
+    policy: dict | None = None,
+) -> dict:
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    order_id = f"paper-{uuid4()}"
+    payload = {
+        "id": order_id,
+        "created_at_utc": now,
+        "symbol": symbol,
+        "asset_class": asset_class,
+        "side": side,
+        "quantity": quantity,
+        "order_type": order_type,
+        "price": price,
+        "stop_price": stop_price,
+        "state": "paper_submitted",
+        "live_trading_enabled": False,
+    }
+    details = _record_paper_order(payload)
+    return {
+        "success": True,
+        "paper": True,
+        "live_trading_enabled": False,
+        "order_id": order_id,
+        "symbol": symbol,
+        "side": side,
+        "quantity": quantity,
+        "order_type": order_type,
+        "details": details,
+        "policy": policy,
+        "result_text": (
+            f"Paper {asset_class} order recorded: {side} {quantity} {symbol} "
+            f"({order_type}). Set ROBIN_MCP_ALLOW_LIVE_TRADING=1 to place live orders."
+        ),
+    }
 
 
 def _extract_api_error(payload) -> str | None:
@@ -213,6 +297,18 @@ def get_pending_orders() -> dict:
 def cancel_order(order_id: str) -> dict:
     """Cancel a specific order by ID. Returns JSON with success and result_text."""
     try:
+        if not _live_trading_enabled():
+            return {
+                "success": False,
+                "order_id": order_id,
+                "paper": True,
+                "live_trading_enabled": False,
+                "error": "Live trading is disabled; refusing to cancel a live broker order.",
+                "result_text": (
+                    "Live trading is disabled. Set ROBIN_MCP_ALLOW_LIVE_TRADING=1 "
+                    "only after verifying this is an intended live cancellation."
+                ),
+            }
         get_session()
         response = rh.cancel_stock_order(order_id)
         success, api_error = _validate_cancel_response(response)
@@ -451,6 +547,18 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
                 "error": policy.get("reason"),
                 "result_text": policy.get("reason"),
             }
+
+        if not _live_trading_enabled():
+            return _paper_order_response(
+                symbol=symbol_up,
+                side=side_lc,
+                quantity=qty,
+                order_type=order_type_lc,
+                asset_class="stock",
+                price=price,
+                stop_price=stop_price,
+                policy=policy,
+            )
 
         result = place_order(symbol_up, qty, side_lc, order_type_lc, price,
                              stop_price=stop_price, time_in_force=time_in_force,
@@ -1051,6 +1159,17 @@ def execute_crypto_order(symbol: str, qty: float, side: str, order_type: str = "
                 "error": policy.get("reason"),
                 "result_text": policy.get("reason"),
             }
+
+        if not _live_trading_enabled():
+            return _paper_order_response(
+                symbol=symbol_up,
+                side=side_lc,
+                quantity=qty,
+                order_type=order_type_lc,
+                asset_class="crypto",
+                price=price,
+                policy=policy,
+            )
 
         result = place_crypto_order(symbol_up, qty, side_lc, order_type_lc, price)
         success, api_error = _validate_order_response(result)

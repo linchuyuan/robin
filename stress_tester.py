@@ -121,11 +121,21 @@ def _beta_to_spy(symbol: str, period: str = "1y") -> float | None:
         return None
 
 
-def replay_shock(positions: list[dict], shock_name: str) -> dict:
+# Tail multiplier: linear-β models systematically underestimate extreme moves
+# because correlations rise, liquidity vanishes, and convexity works against
+# long portfolios. Empirical studies (Cont, Bouchaud) suggest 1.3-2x. We apply
+# a conservative 1.5x to the downside only; upside is not scaled up (it doesn't
+# help risk management to inflate gains).
+_TAIL_MULTIPLIER_DOWNSIDE = 1.5
+
+
+def replay_shock(positions: list[dict], shock_name: str, apply_tail_multiplier: bool = True) -> dict:
     """
     Replay a named shock against a portfolio.
 
     positions: [{symbol, market_value_usd}, ...]
+    apply_tail_multiplier: scale downside moves by 1.5x to account for
+        non-linear tail behavior. Linear β underestimates real drawdowns.
     """
     shock = SHOCK_CATALOG.get(shock_name)
     if not shock:
@@ -145,6 +155,7 @@ def replay_shock(positions: list[dict], shock_name: str) -> dict:
 
     details = []
     total_pnl_usd = 0.0
+    total_pnl_linear_usd = 0.0  # unscaled, for transparency
 
     for pos in positions:
         sym = (pos.get("symbol") or "").upper()
@@ -160,21 +171,30 @@ def replay_shock(positions: list[dict], shock_name: str) -> dict:
             beta = _beta_to_spy(sym)
             spy_move = moves.get("SPY")
             if beta is None or spy_move is None:
-                # Conservative default: assume SPY-like exposure
                 beta = 1.0
                 source = "default_beta_1.0"
             else:
                 source = f"beta_scaled_{beta:.2f}"
             direct_move = (spy_move or 0) * beta
 
-        pnl_usd = mv * direct_move
-        total_pnl_usd += pnl_usd
+        linear_move = direct_move
+        # Apply tail multiplier only to losses, not gains
+        scaled_move = linear_move
+        if apply_tail_multiplier and linear_move < 0:
+            scaled_move = linear_move * _TAIL_MULTIPLIER_DOWNSIDE
+
+        pnl_linear_usd = mv * linear_move
+        pnl_scaled_usd = mv * scaled_move
+        total_pnl_usd += pnl_scaled_usd
+        total_pnl_linear_usd += pnl_linear_usd
+
         details.append({
             "symbol": sym,
             "weight": round(mv / total, 4),
-            "expected_move_pct": round(direct_move, 4),
-            "expected_pnl_usd": round(pnl_usd, 2),
-            "contribution_pct": round(pnl_usd / total, 4),
+            "expected_move_pct": round(scaled_move, 4),
+            "expected_move_pct_linear": round(linear_move, 4),
+            "expected_pnl_usd": round(pnl_scaled_usd, 2),
+            "contribution_pct": round(pnl_scaled_usd / total, 4),
             "source": source,
         })
 
@@ -190,10 +210,13 @@ def replay_shock(positions: list[dict], shock_name: str) -> dict:
         "portfolio_value_usd": round(total, 2),
         "expected_pnl_usd": round(total_pnl_usd, 2),
         "expected_pnl_pct": round(total_pnl_usd / total, 4),
+        "linear_pnl_usd": round(total_pnl_linear_usd, 2),
+        "linear_pnl_pct": round(total_pnl_linear_usd / total, 4),
+        "tail_multiplier_applied_to_losses": _TAIL_MULTIPLIER_DOWNSIDE if apply_tail_multiplier else 1.0,
         "worst_positions": worst_positions,
         "best_positions": best_positions,
         "recovery_days_historical": shock.get("recovery_days_historical"),
-        "note": "Linear beta model — real tails often 1.3-2x more severe",
+        "note": f"Losses scaled by {_TAIL_MULTIPLIER_DOWNSIDE}x to account for non-linear tails",
     }
 
 

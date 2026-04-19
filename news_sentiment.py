@@ -1,6 +1,9 @@
 """
-News sentiment pipeline: yfinance news + lightweight VADER-like lexicon, with
-publication-tier weighting. Combines with Reddit sentiment when available.
+News sentiment pipeline: yfinance news + VADER (with finance lexicon boost)
+and publication-tier weighting. Combines with Reddit sentiment when available.
+
+VADER is used when available (handles negation, intensity, boosters). Falls
+back to a lightweight lexicon otherwise.
 """
 from __future__ import annotations
 
@@ -10,6 +13,31 @@ from typing import Any
 import yfinance as yf
 
 from yahoo_finance import get_yf_news
+
+
+# Try VADER. It's a small dep (~120KB), handles negation ("didn't beat"),
+# intensity ("crushed" > "beat"), and booster words ("very", "slightly").
+try:
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    _VADER = SentimentIntensityAnalyzer()
+    # Extend with finance-specific terms that VADER misses or mis-rates
+    _VADER.lexicon.update({
+        "beat": 2.0, "beats": 2.0, "miss": -2.0, "misses": -2.0, "missed": -2.0,
+        "crushed": 3.0, "crush": 2.5, "guidance": 0.0,  # neutral; context-dependent
+        "raises": 1.5, "raised": 1.5, "lowered": -1.5, "lowers": -1.5,
+        "downgrade": -2.5, "downgraded": -2.5, "upgrade": 2.0, "upgraded": 2.0,
+        "restates": -2.0, "restated": -2.0, "restatement": -2.5,
+        "outperform": 2.0, "underperform": -2.0, "overweight": 1.5, "underweight": -1.5,
+        "bullish": 2.0, "bearish": -2.0,
+        "layoffs": -1.8, "layoff": -1.8, "bankruptcy": -3.5, "insolvent": -3.5,
+        "selloff": -2.0, "rally": 1.8, "surge": 2.2, "plunge": -2.5,
+        "breakout": 1.5, "breakdown": -1.5,
+        "buyback": 1.5, "dividend": 0.8, "dividend-cut": -2.5,
+    })
+    _HAVE_VADER = True
+except Exception:
+    _VADER = None  # type: ignore[assignment]
+    _HAVE_VADER = False
 
 
 # Tier 1 = highest-quality financial press; Tier 3 = aggregators/blogs.
@@ -58,9 +86,29 @@ def _publisher_weight(publisher: str) -> float:
 
 
 def _score_text(text: str) -> tuple[float, int, int]:
-    """Return (polarity in [-1, 1], positive_hits, negative_hits)."""
+    """
+    Return (polarity in [-1, 1], positive_hits, negative_hits).
+
+    Uses VADER when available (handles negation, intensity, boosters). Falls
+    back to the lightweight lexicon count when VADER isn't installed.
+    """
     if not text:
         return 0.0, 0, 0
+
+    if _HAVE_VADER:
+        try:
+            scores = _VADER.polarity_scores(text)
+            polarity = float(scores.get("compound", 0.0))  # already in [-1, 1]
+            # Count positive and negative words via lexicon intersection for
+            # the "no signal in article" filter downstream.
+            tokens = text.lower().replace("-", " ").split()
+            pos = sum(1 for t in tokens if t.strip(".,:;!?\"'()") in POSITIVE_TERMS)
+            neg = sum(1 for t in tokens if t.strip(".,:;!?\"'()") in NEGATIVE_TERMS)
+            return polarity, pos, neg
+        except Exception:
+            pass
+
+    # Fallback: lightweight lexicon
     tokens = text.lower().replace("-", " ").split()
     pos = sum(1 for t in tokens if t.strip(".,:;!?\"'()") in POSITIVE_TERMS)
     neg = sum(1 for t in tokens if t.strip(".,:;!?\"'()") in NEGATIVE_TERMS)

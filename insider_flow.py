@@ -3,18 +3,69 @@ SEC Form 4 insider transaction scraper. Uses openinsider.com (free, no API key)
 as the primary source; falls back to gracefully returning no-data when
 unavailable. Filters out 10b5-1 scheduled trades and option exercises per the
 insider-flow skill's rules.
+
+Hardened: rotating User-Agent, exponential backoff, per-host rate limiting,
+graceful failure on HTML layout changes.
 """
 from __future__ import annotations
 
+import os
+import random
 import re
+import threading
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
+
+try:
+    from urllib3.util.retry import Retry  # type: ignore
+except Exception:
+    Retry = None  # type: ignore[assignment]
 
 
 _BASE_URL = "http://openinsider.com/insider-purchases"
-_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36",
+]
+
+# Per-host rate limit: min seconds between calls
+_MIN_INTERVAL_SEC = float(os.getenv("ROBIN_INSIDER_MIN_INTERVAL_SEC", "2.0"))
+_last_call_ts: float = 0.0
+_rate_lock = threading.Lock()
+
+
+def _build_session() -> requests.Session:
+    s = requests.Session()
+    if Retry is not None:
+        retry = Retry(
+            total=3,
+            backoff_factor=1.5,
+            status_forcelist=(429, 500, 502, 503, 504),
+            allowed_methods=frozenset(["GET"]),
+            raise_on_status=False,
+        )
+        s.mount("http://", HTTPAdapter(max_retries=retry))
+        s.mount("https://", HTTPAdapter(max_retries=retry))
+    return s
+
+
+_SESSION = _build_session()
+
+
+def _rate_limit() -> None:
+    global _last_call_ts
+    with _rate_lock:
+        now = time.time()
+        wait = _MIN_INTERVAL_SEC - (now - _last_call_ts)
+        if wait > 0:
+            time.sleep(wait)
+        _last_call_ts = time.time()
 
 
 def _parse_openinsider_table(html: str) -> list[dict]:
@@ -66,17 +117,50 @@ def _parse_openinsider_table(html: str) -> list[dict]:
     return out
 
 
-def fetch_insider_transactions(symbol: str, days: int = 30) -> list[dict]:
-    """Fetch qualifying insider transactions for a symbol in the last N days."""
+def fetch_insider_transactions(symbol: str, days: int = 30) -> tuple[list[dict], dict]:
+    """
+    Fetch qualifying insider transactions for a symbol in the last N days.
+
+    Returns (transactions, fetch_meta). fetch_meta exposes data-quality info
+    so callers can distinguish "no insider activity" from "scraper broken".
+    """
     symbol_up = str(symbol).upper().strip()
-    url = f"http://openinsider.com/screener?s={symbol_up}&o=&pl=&ph=&ll=&lh=&fd=-{max(1, int(days))}&fdr=&td=0&tdr=&fdlyl=&fdlyh=&daysago=&xp=1&vl=&vh=&ocl=&och=&sic1=-1&sicl=100&sich=9999&grp=0&nfl=&nfh=&nil=&nih=&nol=&noh=&v2l=&v2h=&oc2l=&oc2h=&sortcol=0&cnt=50&page=1"
+    url = (
+        f"http://openinsider.com/screener?s={symbol_up}"
+        f"&fd=-{max(1, int(days))}&fdr=&td=0&tdr=&xp=1&cnt=50"
+    )
+    meta = {
+        "source": "openinsider",
+        "url": url,
+        "http_status": None,
+        "error": None,
+        "parsed_rows": 0,
+    }
+    _rate_limit()
+    headers = {
+        "User-Agent": random.choice(_USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
     try:
-        r = requests.get(url, headers={"User-Agent": _USER_AGENT}, timeout=12)
+        r = _SESSION.get(url, headers=headers, timeout=12)
+        meta["http_status"] = r.status_code
         if r.status_code != 200:
-            return []
-        return _parse_openinsider_table(r.text)
-    except Exception:
-        return []
+            meta["error"] = f"http_{r.status_code}"
+            return [], meta
+        rows = _parse_openinsider_table(r.text)
+        meta["parsed_rows"] = len(rows)
+        # Heuristic: if the response is substantial but we parsed zero rows,
+        # the table layout probably changed — warn the caller explicitly.
+        if len(r.text) > 5_000 and not rows and "tinytable" not in r.text:
+            meta["error"] = "table_layout_changed_or_blocked"
+        return rows, meta
+    except requests.RequestException as e:
+        meta["error"] = f"request_exception:{type(e).__name__}"
+        return [], meta
+    except Exception as e:
+        meta["error"] = f"exception:{type(e).__name__}:{str(e)[:80]}"
+        return [], meta
 
 
 def _is_qualifying_buy(txn: dict) -> bool:
@@ -142,7 +226,7 @@ def score_insider_signal(transactions: list[dict]) -> dict:
 def get_insider_flow(symbol: str, days: int = 30) -> dict:
     """Main entry point; combines fetch + score."""
     symbol_up = str(symbol).upper().strip()
-    transactions = fetch_insider_transactions(symbol_up, days)
+    transactions, fetch_meta = fetch_insider_transactions(symbol_up, days)
     signal = score_insider_signal(transactions)
     return {
         "symbol": symbol_up,
@@ -150,5 +234,6 @@ def get_insider_flow(symbol: str, days: int = 30) -> dict:
         "transaction_count_raw": len(transactions),
         "signal": signal,
         "source": "openinsider",
+        "fetch_meta": fetch_meta,
         "fetched_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }

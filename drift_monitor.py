@@ -7,9 +7,18 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl  # POSIX only
+    _HAVE_FCNTL = True
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+    _HAVE_FCNTL = False
 
 try:
     from execution_models import estimate_slippage_bps
@@ -23,22 +32,56 @@ _DRIFT_FILE = os.getenv(
 )
 
 
-def _load_drift_state() -> dict:
+@contextmanager
+def _locked_handle(path: Path, mode: str):
+    """Open a file with an exclusive advisory lock (POSIX). No-op elsewhere."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    f = open(path, mode)
     try:
-        p = Path(_DRIFT_FILE)
-        if p.exists():
-            with open(p, "r") as f:
-                return json.load(f)
+        if _HAVE_FCNTL:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        yield f
+    finally:
+        try:
+            if _HAVE_FCNTL:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        finally:
+            f.close()
+
+
+def _load_drift_state() -> dict:
+    p = Path(_DRIFT_FILE)
+    if not p.exists():
+        return {"fills": [], "stats": {}}
+    try:
+        with _locked_handle(p, "r") as f:
+            return json.load(f)
     except Exception:
-        pass
-    return {"fills": [], "stats": {}}
+        return {"fills": [], "stats": {}}
 
 
 def _save_drift_state(state: dict) -> None:
+    """Atomic write: tempfile + rename, with an exclusive lock on the final path."""
     p = Path(_DRIFT_FILE)
     p.parent.mkdir(parents=True, exist_ok=True)
-    with open(p, "w") as f:
-        json.dump(state, f, indent=2)
+    # Write to temp in same directory for atomic rename
+    fd, tmp_path = tempfile.mkstemp(dir=str(p.parent), prefix=".drift_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as tmp:
+            json.dump(state, tmp, indent=2)
+        # Acquire an exclusive lock on the target to serialize concurrent renames
+        target_for_lock = p if p.exists() else p  # lock works either way
+        if p.exists() and _HAVE_FCNTL:
+            with _locked_handle(p, "a"):
+                os.replace(tmp_path, p)
+        else:
+            os.replace(tmp_path, p)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        raise
 
 
 def record_live_fill(

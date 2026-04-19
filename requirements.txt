@@ -10,3 +10,4 @@ pandas_market_calendars>=5.0
 praw>=7.7.0
 requests>=2.28.0
 pytz>=2023.3
+vaderSentiment>=3.3.2

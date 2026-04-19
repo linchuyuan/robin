@@ -5,9 +5,41 @@ Uses the existing get_option_chain / get_yf_option_chain outputs.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 import math
 import statistics
+
+try:
+    from quant import calculate_greeks
+except ImportError:
+    calculate_greeks = None
+
+
+def _compute_delta_if_missing(opt: dict, spot: float, expiration_date: str | None, side: str) -> float | None:
+    """
+    Fallback Black-Scholes delta when Yahoo chain lacks the field. Robinhood
+    chain provides delta natively; this is only exercised on Yahoo path.
+    """
+    d = opt.get("delta")
+    if d is not None:
+        try:
+            return float(d)
+        except (TypeError, ValueError):
+            pass
+    if calculate_greeks is None or not expiration_date:
+        return None
+    try:
+        strike = float(opt.get("strike") or 0)
+        iv = float(opt.get("implied_volatility") or 0)
+        if strike <= 0 or iv <= 0 or spot <= 0:
+            return None
+        exp_dt = datetime.strptime(expiration_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        ttm_years = max(0.001, (exp_dt - datetime.now(timezone.utc)).total_seconds() / 31557600.0)
+        g = calculate_greeks(S=spot, K=strike, T=ttm_years, r=0.045, sigma=iv, q=0.0, option_type=side)
+        return g.get("delta")
+    except Exception:
+        return None
 
 
 def _strike_list(items: list[dict]) -> list[tuple[float, dict]]:
@@ -17,11 +49,12 @@ def _strike_list(items: list[dict]) -> list[tuple[float, dict]]:
     )
 
 
-def _delta_25_strikes(chain_side: list[dict], side: str) -> dict | None:
-    """Find the strike closest to |delta| = 0.25."""
+def _delta_25_strikes(chain_side: list[dict], side: str, spot: float = 0.0, expiration_date: str | None = None) -> dict | None:
+    """Find the strike closest to |delta| = 0.25. Falls back to BS-computed delta
+    when chain lacks the field (Yahoo path)."""
     candidates = []
     for o in chain_side:
-        d = o.get("delta")
+        d = _compute_delta_if_missing(o, spot, expiration_date, side)
         if d is None:
             continue
         try:
@@ -36,9 +69,14 @@ def _delta_25_strikes(chain_side: list[dict], side: str) -> dict | None:
 
 
 def fit_vol_smile(chain_side: list[dict], spot: float) -> dict:
-    """Fit quadratic smile iv(m) = a + b*m + c*m^2. Returns coefficients + R^2."""
+    """Fit quadratic smile iv(m) = a + b*m + c*m^2. Uses numpy lstsq."""
     try:
-        points = []
+        import numpy as np
+    except ImportError:
+        return {"available": False, "reason": "numpy_unavailable"}
+    try:
+        xs: list[float] = []
+        ys: list[float] = []
         for o in chain_side:
             k = float(o.get("strike") or 0)
             iv = float(o.get("implied_volatility") or 0)
@@ -46,53 +84,27 @@ def fit_vol_smile(chain_side: list[dict], spot: float) -> dict:
             bid = float(o.get("bid") or 0)
             if k <= 0 or iv <= 0 or spot <= 0 or oi < 50 or bid <= 0:
                 continue
-            points.append((math.log(k / spot), iv))
-        if len(points) < 5:
-            return {"available": False}
+            xs.append(math.log(k / spot))
+            ys.append(iv)
+        n = len(xs)
+        if n < 5:
+            return {"available": False, "reason": "too_few_liquid_strikes"}
 
-        n = len(points)
-        # Build normal equations for least squares on [1, m, m^2]
-        Sx = sum(m for m, _ in points)
-        Sx2 = sum(m * m for m, _ in points)
-        Sx3 = sum(m ** 3 for m, _ in points)
-        Sx4 = sum(m ** 4 for m, _ in points)
-        Sy = sum(iv for _, iv in points)
-        Sxy = sum(m * iv for m, iv in points)
-        Sx2y = sum(m * m * iv for m, iv in points)
+        m = np.asarray(xs, dtype=float)
+        y = np.asarray(ys, dtype=float)
+        X = np.column_stack([np.ones(n), m, m * m])
 
-        # Solve 3x3 system:
-        # [n   Sx  Sx2 ] [a]   [Sy  ]
-        # [Sx  Sx2 Sx3 ] [b] = [Sxy ]
-        # [Sx2 Sx3 Sx4 ] [c]   [Sx2y]
-        M = [[n, Sx, Sx2], [Sx, Sx2, Sx3], [Sx2, Sx3, Sx4]]
-        Y = [Sy, Sxy, Sx2y]
+        betas, *_ = np.linalg.lstsq(X, y, rcond=None)
+        a, b, c = float(betas[0]), float(betas[1]), float(betas[2])
 
-        def det3(m):
-            return (
-                m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
-                - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
-                + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
-            )
+        y_hat = X @ betas
+        ss_res = float(np.sum((y - y_hat) ** 2))
+        ss_tot = float(np.sum((y - y.mean()) ** 2))
+        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
 
-        D = det3(M)
-        if abs(D) < 1e-12:
-            return {"available": False, "reason": "singular_matrix"}
-
-        def replace_col(m, col, v):
-            out = [row[:] for row in m]
-            for i in range(3):
-                out[i][col] = v[i]
-            return out
-
-        a = det3(replace_col(M, 0, Y)) / D
-        b = det3(replace_col(M, 1, Y)) / D
-        c = det3(replace_col(M, 2, Y)) / D
-
-        # R^2
-        mean_y = Sy / n
-        ss_tot = sum((iv - mean_y) ** 2 for _, iv in points)
-        ss_res = sum((iv - (a + b * m + c * m ** 2)) ** 2 for m, iv in points)
-        r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+        # Condition number check — warn on near-singular design
+        cond = float(np.linalg.cond(X))
+        stability = "stable" if cond < 1e4 else "unstable"
 
         return {
             "available": True,
@@ -101,6 +113,8 @@ def fit_vol_smile(chain_side: list[dict], spot: float) -> dict:
             "smile_curvature": round(c, 4),
             "r_squared": round(r2, 3),
             "points_used": n,
+            "condition_number": round(cond, 1),
+            "stability": stability,
         }
     except Exception as e:
         return {"available": False, "error": str(e)}
@@ -193,8 +207,8 @@ def detect_unusual_activity(chain: dict) -> dict:
     skew_slope = smile.get("skew_slope") if smile.get("available") else None
 
     # RR25 (25-delta call IV minus 25-delta put IV)
-    d25_call = _delta_25_strikes(calls, "call")
-    d25_put = _delta_25_strikes(puts, "put")
+    d25_call = _delta_25_strikes(calls, "call", spot=spot, expiration_date=expiration)
+    d25_put = _delta_25_strikes(puts, "put", spot=spot, expiration_date=expiration)
     rr25 = None
     if d25_call and d25_put:
         c_iv = float(d25_call.get("implied_volatility") or 0)

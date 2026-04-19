@@ -1,14 +1,23 @@
 """
 Macro regime data: yield-curve proxy, credit-spread proxy, VIX term structure,
 and a composite regime dashboard. Uses yfinance (free) — no FRED API required.
+
+Hardened: in-process TTL cache (30 min) to avoid hammering yfinance on repeated
+runs; graceful degradation with explicit error reasons.
 """
 from __future__ import annotations
 
+import os
+import time
 from datetime import datetime, timezone
 from typing import Any
 
 import yfinance as yf
 import pandas as pd
+
+
+_DOWNLOAD_CACHE: dict[tuple[str, str], tuple[float, pd.Series]] = {}
+_CACHE_TTL_SEC = int(os.getenv("ROBIN_MACRO_CACHE_TTL_SEC", "1800"))  # 30 min
 
 
 def _safe_pct_change(series: pd.Series, periods: int) -> float | None:
@@ -25,18 +34,38 @@ def _safe_pct_change(series: pd.Series, periods: int) -> float | None:
 
 
 def _download_close(symbol: str, period: str = "3mo") -> pd.Series:
-    try:
-        data = yf.download(symbol, period=period, progress=False, auto_adjust=True)
-        if data is None or data.empty:
-            return pd.Series(dtype=float)
-        if isinstance(data.columns, pd.MultiIndex):
-            col = data["Close"] if "Close" in data.columns.get_level_values(0) else data
-            if isinstance(col, pd.DataFrame):
-                col = col.iloc[:, 0]
-            return col.dropna()
-        return data["Close"].dropna() if "Close" in data.columns else data.iloc[:, 0].dropna()
-    except Exception:
-        return pd.Series(dtype=float)
+    """Download daily closes with TTL cache. Retries once on transient failure."""
+    key = (symbol, period)
+    cached = _DOWNLOAD_CACHE.get(key)
+    if cached and (time.time() - cached[0]) < _CACHE_TTL_SEC:
+        return cached[1]
+
+    for attempt in range(2):
+        try:
+            data = yf.download(symbol, period=period, progress=False, auto_adjust=True)
+            if data is None or data.empty:
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+                break
+            if isinstance(data.columns, pd.MultiIndex):
+                col = data["Close"] if "Close" in data.columns.get_level_values(0) else data
+                if isinstance(col, pd.DataFrame):
+                    col = col.iloc[:, 0]
+                series = col.dropna()
+            elif "Close" in data.columns:
+                series = data["Close"].dropna()
+            else:
+                series = data.iloc[:, 0].dropna()
+            _DOWNLOAD_CACHE[key] = (time.time(), series)
+            return series
+        except Exception:
+            if attempt == 0:
+                time.sleep(0.5)
+                continue
+            break
+    # Final fallback: empty series (but don't overwrite a stale cache entry with empty)
+    return pd.Series(dtype=float)
 
 
 def get_yield_curve_proxy() -> dict:

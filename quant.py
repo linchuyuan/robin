@@ -453,6 +453,15 @@ def get_technical_indicators(symbol: str) -> dict:
             "return_5d": round(float(ret_5d), 4),
             "return_20d": round(float(ret_20d), 4),
             "relative_volume": round(float(rel_vol), 2),
+            "daily_relative_volume": round(float(rel_vol), 2),
+            "relative_volume_context": {
+                "method": "latest_daily_volume_vs_prior_20_full_day_average",
+                "current_volume": int(curr_vol) if not pd.isna(curr_vol) else None,
+                "prior_20d_avg_volume": round(float(vol_20d_avg), 2) if not pd.isna(vol_20d_avg) else None,
+                "valid_for": "daily_or_near_close",
+                "intraday_low_signal_reliable": False,
+                "decision_role": "soft_context_only_during_market_hours",
+            },
             "trend": {
                 "score": trend_score,
                 "label": trend_label,
@@ -475,6 +484,207 @@ def get_technical_indicators(symbol: str) -> dict:
         return result
     except Exception as e:
         return {"error": str(e)}
+
+
+def get_volume_velocity(
+    symbol: str,
+    interval: str = "5m",
+    period: str = "5d",
+    baseline_bars: int = 48,
+    series_points: int = 24,
+) -> dict:
+    """
+    Calculate intraday volume velocity as a time series.
+
+    This is intended for intraday participation checks. It compares each intraday
+    bar's volume against a time-of-day normalized baseline built from the same bar
+    slot across prior sessions. If there are not enough same-slot observations, it
+    falls back to a rolling prior-N-bar baseline.
+    """
+    try:
+        sym = str(symbol).upper().strip()
+        allowed_intervals = {"1m", "2m", "5m", "15m", "30m", "60m", "90m", "1h"}
+        if interval not in allowed_intervals:
+            return {
+                "symbol": sym,
+                "error": f"Unsupported interval '{interval}'. Use one of: {', '.join(sorted(allowed_intervals))}",
+            }
+
+        baseline = max(2, int(baseline_bars or 48))
+        points = max(1, min(int(series_points or 24), 200))
+
+        ticker = yf.Ticker(sym)
+        hist = ticker.history(period=period, interval=interval, prepost=False)
+        if hist is None or hist.empty:
+            return {"symbol": sym, "error": f"No intraday history returned for {sym}."}
+        if "Volume" not in hist.columns:
+            return {"symbol": sym, "error": "Intraday history is missing Volume."}
+
+        volume = pd.to_numeric(hist["Volume"], errors="coerce").fillna(0)
+        usable = pd.DataFrame({"volume": volume}, index=hist.index)
+        usable = usable[usable["volume"] >= 0].copy()
+        if len(usable) < baseline + 2:
+            return {
+                "symbol": sym,
+                "interval": interval,
+                "period": period,
+                "error": f"Not enough intraday bars for baseline_bars={baseline} (found {len(usable)}).",
+            }
+
+        index_series = usable.index.to_series()
+        try:
+            local_index = index_series.dt.tz_convert("America/New_York")
+        except Exception:
+            local_index = index_series
+        usable["trade_date"] = local_index.dt.strftime("%Y-%m-%d")
+        usable["time_slot"] = local_index.dt.strftime("%H:%M")
+        usable["slot_obs_count"] = usable.groupby("time_slot").cumcount()
+
+        same_slot_avg = []
+        same_slot_std = []
+        same_slot_count = []
+        for i, row in usable.iterrows():
+            prior_same_slot = usable.loc[
+                (usable.index < i) & (usable["time_slot"] == row["time_slot"]), "volume"
+            ].tail(baseline)
+            same_slot_count.append(int(len(prior_same_slot)))
+            if len(prior_same_slot) >= 2:
+                same_slot_avg.append(float(prior_same_slot.mean()))
+                same_slot_std.append(float(prior_same_slot.std(ddof=1)))
+            else:
+                same_slot_avg.append(None)
+                same_slot_std.append(None)
+
+        usable["baseline_avg_volume_same_slot"] = same_slot_avg
+        usable["baseline_std_volume_same_slot"] = same_slot_std
+        usable["same_slot_sample_size"] = same_slot_count
+
+        usable["baseline_avg_volume_rolling"] = usable["volume"].rolling(window=baseline).mean().shift(1)
+        usable["baseline_std_volume_rolling"] = usable["volume"].rolling(window=baseline).std().shift(1)
+
+        usable["baseline_type"] = usable["same_slot_sample_size"].apply(
+            lambda n: "same_time_of_day" if n >= 2 else "rolling_prior_bars"
+        )
+        usable["baseline_avg_volume"] = usable.apply(
+            lambda row: row["baseline_avg_volume_same_slot"]
+            if row["baseline_type"] == "same_time_of_day"
+            else row["baseline_avg_volume_rolling"],
+            axis=1,
+        )
+        usable["baseline_std_volume"] = usable.apply(
+            lambda row: row["baseline_std_volume_same_slot"]
+            if row["baseline_type"] == "same_time_of_day"
+            else row["baseline_std_volume_rolling"],
+            axis=1,
+        )
+
+        usable["velocity_ratio"] = usable.apply(
+            lambda row: (row["volume"] / row["baseline_avg_volume"])
+            if pd.notna(row["baseline_avg_volume"]) and row["baseline_avg_volume"] > 0
+            else None,
+            axis=1,
+        )
+        usable["velocity_z_score"] = usable.apply(
+            lambda row: ((row["volume"] - row["baseline_avg_volume"]) / row["baseline_std_volume"])
+            if pd.notna(row["baseline_std_volume"]) and row["baseline_std_volume"] > 0
+            else None,
+            axis=1,
+        )
+        usable["volume_change"] = usable["volume"].diff()
+        usable["volume_change_pct"] = usable["volume"].pct_change().replace([float("inf"), float("-inf")], pd.NA)
+
+        valid = usable.dropna(subset=["baseline_avg_volume", "velocity_ratio"]).copy()
+        if valid.empty:
+            return {
+                "symbol": sym,
+                "interval": interval,
+                "period": period,
+                "error": "Unable to calculate volume velocity from returned intraday bars.",
+            }
+
+        latest = valid.iloc[-1]
+        previous = valid.iloc[-2] if len(valid) >= 2 else None
+        recent = valid.tail(min(6, len(valid)))
+        if len(recent) >= 2:
+            ratio_delta = float(recent["velocity_ratio"].iloc[-1] - recent["velocity_ratio"].iloc[0])
+            trend = "rising" if ratio_delta > 0.15 else ("falling" if ratio_delta < -0.15 else "flat")
+        else:
+            ratio_delta = 0.0
+            trend = "flat"
+
+        def _round_optional(value, digits=4):
+            if value is None or pd.isna(value):
+                return None
+            return round(float(value), digits)
+
+        series = []
+        for ts, row in valid.tail(points).iterrows():
+            series.append(
+                {
+                    "timestamp": ts.isoformat(),
+                    "volume": int(row["volume"]),
+                    "baseline_avg_volume": _round_optional(row["baseline_avg_volume"], 2),
+                    "baseline_type": row.get("baseline_type"),
+                    "same_slot_sample_size": int(row["same_slot_sample_size"]) if pd.notna(row.get("same_slot_sample_size")) else None,
+                    "velocity_ratio": _round_optional(row["velocity_ratio"], 4),
+                    "velocity_z_score": _round_optional(row["velocity_z_score"], 4),
+                    "volume_change": int(row["volume_change"]) if not pd.isna(row["volume_change"]) else None,
+                    "volume_change_pct": _round_optional(row["volume_change_pct"], 4),
+                }
+            )
+
+        latest_ratio = _round_optional(latest["velocity_ratio"], 4)
+        if latest_ratio is None:
+            classification = "unknown"
+        elif latest_ratio >= 2.5:
+            classification = "strong_spike"
+        elif latest_ratio >= 1.8:
+            classification = "unusual_acceleration"
+        elif latest_ratio >= 1.2:
+            classification = "active"
+        elif latest_ratio >= 0.8:
+            classification = "normal"
+        else:
+            classification = "below_recent_pace"
+
+        baseline_method = "same_time_of_day_prior_sessions" if latest.get("baseline_type") == "same_time_of_day" else "rolling_prior_N_bar_fallback"
+
+        return {
+            "symbol": sym,
+            "interval": interval,
+            "period": period,
+            "baseline_bars": baseline,
+            "series_points": len(series),
+            "latest": {
+                "timestamp": valid.index[-1].isoformat(),
+                "volume": int(latest["volume"]),
+                "previous_volume": int(previous["volume"]) if previous is not None else None,
+                "baseline_avg_volume": _round_optional(latest["baseline_avg_volume"], 2),
+                "baseline_type": latest.get("baseline_type"),
+                "same_slot_sample_size": int(latest["same_slot_sample_size"]) if pd.notna(latest.get("same_slot_sample_size")) else None,
+                "velocity_ratio": latest_ratio,
+                "velocity_z_score": _round_optional(latest["velocity_z_score"], 4),
+                "volume_change": int(latest["volume_change"]) if not pd.isna(latest["volume_change"]) else None,
+                "volume_change_pct": _round_optional(latest["volume_change_pct"], 4),
+                "classification": classification,
+            },
+            "trend": {
+                "label": trend,
+                "ratio_delta_recent": round(ratio_delta, 4),
+            },
+            "series": series,
+            "data_quality": {
+                "source": "yfinance_intraday_history",
+                "method": baseline_method,
+                "decision_role": "intraday_participation_confirmation",
+                "hard_gate": False,
+                "note": "Primary baseline is same time-of-day across prior sessions, with rolling prior-bar fallback when sample size is insufficient. Still limited by Yahoo/yfinance data quality.",
+            },
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timezone": "UTC",
+        }
+    except Exception as e:
+        return {"symbol": str(symbol).upper(), "error": str(e)}
 
 def get_sector_performance() -> list:
     """

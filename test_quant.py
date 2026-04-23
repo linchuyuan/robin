@@ -1,6 +1,6 @@
 import json
 
-from quant import get_peers, get_sector_performance, get_technical_indicators
+from quant import get_peers, get_sector_performance, get_technical_indicators, get_volume_velocity
 
 
 def _assert(condition: bool, message: str) -> None:
@@ -25,6 +25,8 @@ def test_tech_ind() -> None:
         "return_5d",
         "return_20d",
         "relative_volume",
+        "daily_relative_volume",
+        "relative_volume_context",
         "volatility_sizing",
         "timestamp",
         "timezone",
@@ -37,6 +39,24 @@ def test_tech_ind() -> None:
     rs_pct = res.get("rs_spy_percentile")
     if rs_pct is not None:
         _assert(0 <= rs_pct <= 100, "rs_spy_percentile should be between 0 and 100")
+    rel_ctx = res.get("relative_volume_context")
+    _assert(isinstance(rel_ctx, dict), "relative_volume_context should be a dict")
+    _assert(rel_ctx.get("valid_for") == "daily_or_near_close", "relative volume should be labeled daily/near-close")
+
+
+def test_volume_velocity() -> None:
+    print("\nTesting get_volume_velocity('AAPL')...")
+    res = get_volume_velocity("AAPL", interval="5m", period="5d", baseline_bars=12, series_points=6)
+    print(json.dumps(res, indent=2))
+
+    _assert("error" not in res, f"Volume velocity returned error: {res.get('error')}")
+    for key in ("symbol", "interval", "latest", "trend", "series", "data_quality", "timestamp", "timezone"):
+        _assert(key in res, f"Missing key in volume velocity: {key}")
+    latest = res["latest"]
+    for key in ("volume", "baseline_avg_volume", "velocity_ratio", "classification", "baseline_type", "same_slot_sample_size"):
+        _assert(key in latest, f"Missing latest volume velocity key: {key}")
+    _assert(isinstance(res["series"], list), "volume velocity series should be a list")
+    _assert(latest.get("baseline_type") in {"same_time_of_day", "rolling_prior_bars"}, "Unexpected baseline_type")
 
 
 def test_sector_perf() -> None:
@@ -71,6 +91,7 @@ def test_peers() -> None:
 
 if __name__ == "__main__":
     test_tech_ind()
+    test_volume_velocity()
     test_sector_perf()
     test_peers()
     print("\nAll quant contract tests passed.")

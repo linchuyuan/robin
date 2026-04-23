@@ -9,6 +9,7 @@ from quant import (
     get_portfolio_risk_summary as calculate_portfolio_risk,
     get_sector_performance as calculate_sector_performance,
     get_technical_indicators as calculate_technical_indicators,
+    get_volume_velocity as calculate_volume_velocity,
 )
 
 
@@ -18,8 +19,11 @@ def register_quant_tools(mcp) -> None:
         """
         Calculate technical indicators for a symbol: RSI, SMA (20/50/200), EMA (9/21),
         MACD (value/signal/histogram/crossover), Bollinger Bands (%B/bandwidth),
-        ATR, VWAP, relative volume, relative strength vs SPY, IV rank, trend composite,
+        ATR, VWAP, daily relative volume, relative strength vs SPY, IV rank, trend composite,
         and volatility-based position sizing.
+
+        Note: relative_volume is daily volume vs prior 20 full-day average. For intraday
+        participation, use get_volume_velocity_tool instead.
         """
         result = calculate_technical_indicators(symbol)
         sym = str(symbol).upper()
@@ -44,12 +48,55 @@ def register_quant_tools(mcp) -> None:
                 f"BB%B: {bb.get('pct_b')} BW: {bb.get('bandwidth')} | "
                 f"ATR14: {result.get('atr_14')} | VWAP20: {result.get('vwap_20d')} | "
                 f"Ret5d: {result.get('return_5d')} | Ret20d: {result.get('return_20d')} | "
-                f"RelVol: {result.get('relative_volume')} | RS%vsSPY: {result.get('rs_spy_percentile')} | "
+                f"DailyRelVol: {result.get('relative_volume')} | RS%vsSPY: {result.get('rs_spy_percentile')} | "
                 f"IVRank: {iv.get('iv_rank')} IVPctl: {iv.get('iv_percentile')} | "
                 f"ATRStopDist: {(result.get('volatility_sizing') or {}).get('atr_stop_dist')} | "
                 f"Shares/1kRisk: {(result.get('volatility_sizing') or {}).get('suggested_shares_per_1k_risk')}"
             ),
         }
+
+    @mcp.tool()
+    def get_volume_velocity_tool(
+        symbol: str,
+        interval: str = "5m",
+        period: str = "5d",
+        baseline_bars: int = 48,
+        series_points: int = 24,
+    ) -> dict:
+        """
+        Calculate intraday volume velocity as a time series.
+
+        This compares each recent intraday bar's volume with the average volume of
+        the prior N bars. Use it for intraday participation/acceleration checks
+        instead of daily relative_volume.
+        """
+        result = calculate_volume_velocity(
+            symbol=symbol,
+            interval=interval,
+            period=period,
+            baseline_bars=baseline_bars,
+            series_points=series_points,
+        )
+        sym = str(symbol).upper().strip()
+        if result.get("error"):
+            return {
+                **result,
+                "symbol": sym,
+                "result_text": f"Error computing volume velocity for {sym}: {result.get('error')}",
+            }
+
+        latest = result.get("latest") or {}
+        trend = result.get("trend") or {}
+        result["result_text"] = (
+            f"{sym} volume velocity ({result.get('interval')}, baseline={result.get('baseline_bars')} bars) | "
+            f"Latest volume: {latest.get('volume')} | "
+            f"Baseline: {latest.get('baseline_avg_volume')} [{latest.get('baseline_type')}, n={latest.get('same_slot_sample_size')}] | "
+            f"Velocity ratio: {latest.get('velocity_ratio')} | "
+            f"Z: {latest.get('velocity_z_score')} | "
+            f"Class: {latest.get('classification')} | "
+            f"Trend: {trend.get('label')} ({trend.get('ratio_delta_recent')})"
+        )
+        return result
 
     @mcp.tool()
     def get_sector_performance_tool() -> dict:

@@ -89,10 +89,22 @@ async def test_server() -> None:
             tech = _extract_payload(tech_raw)
             _assert_common_contract(tech, "get_technical_indicators_tool")
             if "error" not in tech:
-                for key in ("symbol", "price", "sma_50", "sma_200", "rsi_14", "atr_14", "rs_spy_percentile", "return_5d", "return_20d", "relative_volume", "volatility_sizing", "timestamp", "timezone"):
+                for key in ("symbol", "price", "sma_50", "sma_200", "rsi_14", "atr_14", "rs_spy_percentile", "return_5d", "return_20d", "relative_volume", "daily_relative_volume", "relative_volume_context", "volatility_sizing", "timestamp", "timezone"):
                     _assert(key in tech, f"get_technical_indicators_tool: missing key '{key}'")
                 _assert(isinstance(tech["volatility_sizing"], dict), "volatility_sizing must be a dict")
                 _assert("suggested_shares_per_1k_risk" in tech["volatility_sizing"], "volatility_sizing missing suggested_shares")
+
+            print("Testing get_volume_velocity_tool...")
+            vol_raw = await session.call_tool(
+                "get_volume_velocity_tool",
+                arguments={"symbol": "AAPL", "interval": "5m", "period": "5d", "baseline_bars": 12, "series_points": 6},
+            )
+            vol = _extract_payload(vol_raw)
+            _assert_common_contract(vol, "get_volume_velocity_tool")
+            if "error" not in vol:
+                for key in ("symbol", "interval", "latest", "trend", "series", "data_quality", "timestamp", "timezone"):
+                    _assert(key in vol, f"get_volume_velocity_tool: missing key '{key}'")
+                _assert(isinstance(vol["series"], list), "get_volume_velocity_tool: series must be list")
 
             print("Testing get_yf_stock_quote...")
             yf_quote_raw = await session.call_tool("get_yf_stock_quote", arguments={"symbol": "AAPL"})

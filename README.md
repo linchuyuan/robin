@@ -22,7 +22,7 @@ This is not a fully automated trading bot by itself. The implementation is desig
 | Market context | `sentiment.py`, `market_calendar.py`, `macro_news.py`, `economic_events.py` | Fetches Fear & Greed, VIX, yield curve, market breadth, market sessions/holidays, macro headlines, and economic events. |
 | Reddit data | `reddit_data.py`, `reddit_sentiment.py` | Fetches Reddit posts/comments and computes ticker mentions, normalized sentiment snapshots, hype risk, and trending tickers. |
 | Kalshi data | `kalshi.py`, `mcp_kalshi_tools.py` | Browses public Kalshi prediction markets for global, economic, macro, and stock-ticker context. This is read-only market-data access. |
-| Quant research | `quant.py`, `backtest_engine.py` | Calculates indicators, IV rank, unusual options activity, risk/correlation metrics, peer candidates, and strategy backtests. |
+| Quant research | `quant.py`, `backtest_engine.py` | Calculates indicators, daily relative volume context, intraday volume velocity, IV rank, unusual options activity, risk/correlation metrics, peer candidates, and strategy backtests. |
 | Advanced risk & attribution | `quant_advanced.py`, `stress_tester.py` | Fama-French 5+MOM factor attribution (Ken French data with ETF-proxy fallback), historical-simulation VaR/CVaR, mean-variance/risk-parity/Kelly sizing, per-position risk attribution, and 7-scenario historical shock replay with 1.5× tail multiplier. |
 | Alt-data & flow | `insider_flow.py`, `options_flow.py`, `news_sentiment.py`, `earnings_consensus.py` | Openinsider Form-4 insider transactions (rate-limited, UA-rotated), options flow / unusual activity with smile fit and RR25, VADER-based news sentiment with publisher-tier weighting, and earnings-surprise probability from yfinance estimate/trend/history tables. |
 | Macro & regime | `macro_data.py` | Yield-curve / credit-spread / VIX-term-structure / flight-to-quality / sector-breadth dashboards feeding the macro-regime-classifier skill. |
@@ -284,6 +284,7 @@ Kalshi tools:
 Quant tools:
 
 - `get_technical_indicators_tool`
+- `get_volume_velocity_tool`
 - `get_sector_performance_tool`
 - `get_symbol_peers`
 - `get_portfolio_correlation_tool`

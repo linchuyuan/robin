@@ -134,5 +134,52 @@ class StockHistoryTool(BaseTool):
             }
 
 
+class VolumeVelocityTool(BaseTool):
+    name = "get_volume_velocity_tool"
+    description = (
+        "Calculate intraday volume velocity as a time series. Use this for intraday "
+        "participation checks instead of daily relative_volume."
+    )
+
+    class Input(BaseModel):
+        symbol: str = Field(description="The stock ticker symbol")
+        interval: str = Field(default="5m", description="Intraday interval, e.g. 1m, 5m, 15m")
+        period: str = Field(default="5d", description="History period, e.g. 1d, 5d, 1mo")
+        baseline_bars: int = Field(default=48, description="Number of prior bars used as baseline")
+        series_points: int = Field(default=24, description="Number of recent velocity points to return")
+
+    args_schema: Type[BaseModel] = Input
+
+    def _run(
+        self,
+        symbol: str,
+        interval: str = "5m",
+        period: str = "5d",
+        baseline_bars: int = 48,
+        series_points: int = 24,
+    ) -> dict:
+        from quant import get_volume_velocity
+
+        result = get_volume_velocity(
+            symbol=symbol,
+            interval=interval,
+            period=period,
+            baseline_bars=baseline_bars,
+            series_points=series_points,
+        )
+        if result.get("error"):
+            result["result_text"] = f"Error computing volume velocity for {str(symbol).upper()}: {result['error']}"
+            return result
+
+        latest = result.get("latest") or {}
+        trend = result.get("trend") or {}
+        result["result_text"] = (
+            f"{str(symbol).upper()} volume velocity ({result.get('interval')}) | "
+            f"ratio={latest.get('velocity_ratio')} | class={latest.get('classification')} | "
+            f"trend={trend.get('label')}"
+        )
+        return result
+
+
 # Compatibility list ready to be bound to non-MCP LangChain agents.
-tools = [PortfolioTool(), StockNewsTool(), StockHistoryTool()]
+tools = [PortfolioTool(), StockNewsTool(), StockHistoryTool(), VolumeVelocityTool()]

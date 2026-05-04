@@ -4,6 +4,13 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
+LAST_MACRO_NEWS_META: Dict[str, Any] = {}
+
+
+def get_macro_news_meta() -> Dict[str, Any]:
+    return dict(LAST_MACRO_NEWS_META)
+
+
 def get_macro_news(limit: int = 5, only_today: bool = False) -> List[Dict[str, str]]:
     """
     Fetch and aggregate latest macroeconomic news from Investing.com, Bloomberg, and CNBC.
@@ -27,6 +34,8 @@ def get_macro_news(limit: int = 5, only_today: bool = False) -> List[Dict[str, s
     }
     
     all_news = []
+    sources_failed = []
+    sources_ok = []
     # Use local date for "today" filtering
     today_local = datetime.now().date()
     
@@ -34,11 +43,13 @@ def get_macro_news(limit: int = 5, only_today: bool = False) -> List[Dict[str, s
         try:
             response = requests.get(url, headers=headers, timeout=5)
             if response.status_code != 200:
+                sources_failed.append({"source": source_name, "error": f"http_{response.status_code}"})
                 continue
                 
             # Parse XML
             root = ET.fromstring(response.content)
             items = root.findall("./channel/item")
+            sources_ok.append(source_name)
             
             for item in items:
                 pub_date_str = item.find("pubDate").text if item.find("pubDate") is not None else ""
@@ -71,7 +82,7 @@ def get_macro_news(limit: int = 5, only_today: bool = False) -> List[Dict[str, s
                 link = item.find("link").text if item.find("link") is not None else ""
                 description = item.find("description").text if item.find("description") is not None else ""
                 
-                # Use min time if parse failed
+                parsed_at_unknown = dt_obj is None
                 sort_date = dt_obj if dt_obj else datetime.min.replace(tzinfo=timezone.utc)
 
                 all_news.append({
@@ -80,10 +91,12 @@ def get_macro_news(limit: int = 5, only_today: bool = False) -> List[Dict[str, s
                     "published": pub_date_str,
                     "summary": description,
                     "source": source_name,
+                    "parsed_at_unknown": parsed_at_unknown,
                     "_sort_date": sort_date
                 })
                 
-        except Exception:
+        except Exception as e:
+            sources_failed.append({"source": source_name, "error": str(e)})
             continue
             
     # Sort by date descending (newest first)
@@ -97,8 +110,13 @@ def get_macro_news(limit: int = 5, only_today: bool = False) -> List[Dict[str, s
         del n_copy["_sort_date"]
         result.append(n_copy)
         
-    if not result and not all_news:
-         return []
+    global LAST_MACRO_NEWS_META
+    LAST_MACRO_NEWS_META = {
+        "sources_ok": sources_ok,
+        "sources_failed": sources_failed,
+        "partial": bool(sources_failed),
+        "fetched_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
          
     return result
 

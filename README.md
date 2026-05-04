@@ -87,11 +87,15 @@ Optional MCP execution safety variables:
 
 ```bash
 # Default is live broker execution for MCP mutating tools.
-# Set to paper only for simulation/testing.
+# Set paper explicitly for simulation/testing.
 ROBIN_MCP_EXECUTION_MODE=live  # live | paper
 
-# Legacy override: set to 0 to force paper mode.
+# Legacy override: set to 0 to force paper mode when ROBIN_MCP_EXECUTION_MODE is unset.
 ROBIN_MCP_ALLOW_LIVE_TRADING=1
+
+# Required only when binding HTTP/SSE/streamable-http to a non-loopback host.
+# Remote deployments must be protected by network controls/auth.
+ROBIN_MCP_ALLOW_REMOTE=0
 
 # Use the Clawd workspace memory tree for paper orders, drift, traces, and params.
 CLAWD_MEMORY_DIR=/path/to/clawd/memory
@@ -101,6 +105,8 @@ ROBIN_PAPER_ORDER_FILE=/path/to/paper-orders.json
 ```
 
 Set `ROBIN_MCP_EXECUTION_MODE=paper` or `ROBIN_MCP_ALLOW_LIVE_TRADING=0` for simulation. The CLI remains separate; this setting applies to MCP mutating tools.
+
+For HTTP, SSE, and streamable HTTP transports, `server.py` refuses non-loopback hosts unless `ROBIN_MCP_ALLOW_REMOTE=1` is set. Do not enable remote binding unless the endpoint is behind authentication, TLS, and network allowlisting.
 
 Optional economic calendar variables:
 
@@ -224,7 +230,9 @@ Sample MCP client config for stdio:
 
 ### MCP Response Contract
 
-MCP tools return dictionaries, not plain text. Successful and failed responses include machine-readable fields plus a short `result_text`. Mutating tools such as `execute_order`, `execute_crypto_order`, and `cancel_order` include `success`. Stock and crypto order responses validate that Robinhood returned an order id before reporting success.
+MCP tools return dictionaries, not plain text. Successful and failed responses include machine-readable fields plus a short `result_text`. Many market-data tools also include `data_quality`, `source`, `fetched_at_utc`, `as_of_bar`, warnings, or cache metadata so LLM callers can reason about freshness and confidence.
+
+Mutating tools such as `execute_order`, `execute_crypto_order`, and `cancel_order` include `success`. Stock and crypto order responses validate that Robinhood returned an order id before reporting success. Successful live order responses return a redacted summary in `details` instead of echoing the full broker payload.
 
 Stock order tools validate symbols, side, quantity, order type, price, stop price, and time-in-force before calling Robinhood.
 
@@ -331,15 +339,34 @@ The backtest uses Yahoo Finance data, SPY as benchmark, next-bar execution, slip
 
 ## Tests
 
-The repository contains lightweight tests for server contracts, quant functions, and pre-trade policy behavior:
+The repository contains lightweight tests for auth/session handling, server contracts, quant functions, pre-trade policy behavior, tool contracts, Kalshi helpers, options helpers, and advanced risk modules:
 
 ```bash
-python -m unittest test_server_contract.py test_pretrade_policy.py test_quant.py test_option_utils.py test_kalshi.py
+python -m unittest \
+  test_auth.py \
+  test_server_contract.py \
+  test_pretrade_policy.py \
+  test_quant.py \
+  test_option_utils.py \
+  test_kalshi.py \
+  test_tool_contracts.py \
+  test_advanced_modules.py
 ```
 
 `test_mcp.py` is an integration-style contract script for MCP tool behavior and may require the server/dependencies/configuration expected by the local environment.
 
 ## Deployment Helpers
+
+### Docker
+
+The Docker image runs the MCP server as a non-root user and binds to `127.0.0.1` by default. Keep that default unless the container is behind a trusted reverse proxy with authentication, TLS, and network policy.
+
+```bash
+docker build -t robin-mcp .
+docker run --rm -p 127.0.0.1:8000:8000 --env-file .env robin-mcp
+```
+
+Do not expose `/messages` directly on an untrusted network. Any client that can reach the MCP endpoint can invoke broker tools subject to the configured paper/live mode and policy gates.
 
 The `scripts/` directory packages this repo with an OpenClaw skill tree and configures another compute node.
 
@@ -391,6 +418,8 @@ The configure script installs OpenClaw and MCPorter, unpacks the Robin MCP serve
 
 - Keep `.env`, Robinhood credentials, Reddit credentials, and session cache files out of version control.
 - Use `--dry-run` before stock CLI orders when checking command shape.
+- MCP mutating tools default to live broker execution; set `ROBIN_MCP_EXECUTION_MODE=paper` for dry-run/simulation environments.
+- Put HTTP/streamable MCP behind an authentication boundary before exposing it beyond localhost.
 - MCP stock orders are guarded by `pretrade_policy.py`, but those checks are not a substitute for reviewing every order before execution.
 - Kalshi integration is read-only and is intended to add prediction-market context to the AI stock-trading workflow, not to place Kalshi trades.
 - Network calls depend on third-party APIs and may fail, rate limit, or return incomplete data.

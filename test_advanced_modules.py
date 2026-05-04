@@ -12,6 +12,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 class TestExecutionModels(unittest.TestCase):
@@ -273,6 +274,20 @@ class TestNewsSentiment(unittest.TestCase):
         r = combine_sentiment_sources(reddit_score=0.5, reddit_confidence=0.3, news_score=-0.2, news_weighted_count=5)
         self.assertIn("combined_score", r)
         self.assertEqual(len(r["sources"]), 2)
+
+
+class TestAdvancedMcpSafety(unittest.TestCase):
+    def test_workflow_path_rejects_absolute_paths(self):
+        from mcp_advanced_tools import _workflow_path
+        with self.assertRaises(ValueError):
+            _workflow_path(str(Path.cwd() / "secret.json"))
+
+    def test_workflow_path_resolves_under_memory(self):
+        from mcp_advanced_tools import _workflow_path
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"CLAWD_MEMORY_DIR": tmp}, clear=False):
+                resolved = _workflow_path("memory/decision-trace")
+        self.assertTrue(str(resolved).startswith(str(Path(tmp).resolve())))
 
 
 if __name__ == "__main__":

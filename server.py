@@ -2,6 +2,8 @@
 import argparse
 import json
 import os
+import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -10,7 +12,7 @@ from fastmcp import FastMCP
 from auth import get_session
 from portfolio import list_positions
 from market_data import get_history, get_news
-from macro_news import get_macro_news
+from macro_news import get_macro_news, get_macro_news_meta
 from economic_events import get_economic_events_feed
 from orders import place_order
 from yahoo_finance import get_yf_quote, get_yf_news, get_yf_options
@@ -40,6 +42,8 @@ register_quant_tools(mcp)
 register_kalshi_tools(mcp)
 register_advanced_tools(mcp)
 
+_PAPER_LEDGER_LOCK = threading.Lock()
+
 
 def _is_truthy_env(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -68,17 +72,53 @@ def _paper_ledger_path() -> Path:
     return Path(os.getenv("ROBIN_PAPER_ORDER_FILE", str(_memory_dir() / "paper-orders.json"))).expanduser()
 
 
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fp:
+            json.dump(payload, fp, indent=2)
+            fp.write("\n")
+        os.replace(tmp_name, path)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
 def _record_paper_order(payload: dict) -> dict:
     path = _paper_ledger_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        ledger = json.loads(path.read_text()) if path.exists() else {"orders": []}
-    except Exception:
-        ledger = {"orders": []}
-    ledger.setdefault("orders", []).append(payload)
-    ledger["last_updated_utc"] = payload["created_at_utc"]
-    path.write_text(json.dumps(ledger, indent=2))
-    return {"ledger_path": str(path), "order": payload}
+    with _PAPER_LEDGER_LOCK:
+        try:
+            ledger = json.loads(path.read_text()) if path.exists() else {"orders": []}
+            if not isinstance(ledger, dict):
+                ledger = {"orders": []}
+        except Exception:
+            ledger = {"orders": []}
+        ledger.setdefault("orders", []).append(payload)
+        ledger["last_updated_utc"] = payload["created_at_utc"]
+        _write_json_atomic(path, ledger)
+    return {"ledger_path": str(path), "order_id": payload["id"]}
+
+
+def _safe_order_details(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        return {"response_type": type(payload).__name__}
+    keys = (
+        "id",
+        "state",
+        "type",
+        "side",
+        "quantity",
+        "price",
+        "stop_price",
+        "time_in_force",
+        "created_at",
+        "updated_at",
+        "cancel",
+    )
+    return {key: payload.get(key) for key in keys if key in payload}
 
 
 def _paper_order_response(
@@ -376,6 +416,11 @@ def get_portfolio() -> dict:
         return {
             "positions": normalized,
             "count": len(normalized),
+            "data_quality": {
+                "source": "robinhood_build_holdings",
+                "generated_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "warnings": ["Fundamental enrichment may be incomplete when Robinhood omits sector or industry fields."],
+            },
             "result_text": "\n".join(lines),
         }
     except Exception as e:
@@ -408,6 +453,10 @@ def get_stock_news(symbol: str) -> dict:
         return {
             "symbol": sym,
             "articles": top,
+            "data_quality": {
+                "source": "robinhood_news",
+                "fetched_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            },
             "result_text": "\n".join(lines),
         }
     except Exception as e:
@@ -479,6 +528,11 @@ def get_stock_history(symbol: str, span: str = "week", interval: str = "day") ->
             "interval": interval,
             "candles": data,
             "csv": "\n".join(lines),
+            "data_quality": {
+                "source": "robinhood_stock_historicals",
+                "fetched_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "last_bar": data[-1].get("begins_at") if data else None,
+            },
             "result_text": "\n".join(lines),
         }
     except Exception as e:
@@ -590,9 +644,9 @@ def execute_order(symbol: str, qty: float, side: str, order_type: str = "market"
             "side": side_lc,
             "quantity": qty,
             "order_type": order_type_lc,
-            "details": result,
+            "details": _safe_order_details(result),
             "policy": policy,
-            "result_text": f"Order submitted: {order_id}\nDetails: {result}",
+            "result_text": f"Order submitted: {order_id}",
         }
     except Exception as e:
         return {
@@ -671,8 +725,14 @@ def get_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> dic
         vol_pcr = round(total_put_vol / total_call_vol, 4) if total_call_vol > 0 else None
         oi_pcr = round(total_put_oi / total_call_oi, 4) if total_call_oi > 0 else None
 
-        selected_calls = select_nearby_strikes(calls, current_price, strikes)
-        selected_puts = select_nearby_strikes(puts, current_price, strikes)
+        warning = None
+        if current_price <= 0:
+            warning = "current_price is unavailable; strike filtering skipped and response capped by open_interest."
+            selected_calls = sorted(calls, key=lambda c: to_int(c.get("open_interest"), 0), reverse=True)[: max(1, int(strikes))]
+            selected_puts = sorted(puts, key=lambda p: to_int(p.get("open_interest"), 0), reverse=True)[: max(1, int(strikes))]
+        else:
+            selected_calls = select_nearby_strikes(calls, current_price, strikes)
+            selected_puts = select_nearby_strikes(puts, current_price, strikes)
 
         def fmt_line(opt: dict) -> str:
             return (
@@ -687,6 +747,7 @@ def get_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> dic
         lines = [
             f"Option Chain for {symbol} (Exp: {data.get('expiration_date')})",
             f"Current Price: {current_price}",
+            f"Warning: {warning}" if warning else "",
             "",
             "CALLS:",
             *[fmt_line(c) for c in selected_calls],
@@ -709,6 +770,7 @@ def get_option_chain(symbol: str, expiration_date: str, strikes: int = 5) -> dic
                 "volume_put_call_ratio": vol_pcr,
                 "oi_put_call_ratio": oi_pcr,
             },
+            "warning": warning,
             "result_text": "\n".join(lines),
         }
     except Exception as e:
@@ -752,6 +814,11 @@ def get_yf_stock_quote(symbol: str) -> dict:
         return {
             "symbol": (quote.get('symbol') or str(symbol).upper()),
             "quote": quote,
+            "data_quality": {
+                "source": "yfinance_ticker_info",
+                "fetched_at_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "warning": "Yahoo Finance quote timing and delay status are provider-dependent.",
+            },
             "result_text": "\n".join(lines),
         }
     except Exception as e:
@@ -1075,14 +1142,14 @@ def get_crypto_price(symbol: str) -> dict:
     """
     try:
         get_session()
-        quote = get_crypto_quote(symbol)
+        quote = get_crypto_quote(symbol) or {}
         lines = [
-            f"Symbol: {quote['symbol']}",
-            f"Mark Price: {quote['mark_price']}",
-            f"Bid: {quote['bid_price']}",
-            f"Ask: {quote['ask_price']}",
-            f"High: {quote['high_price']}",
-            f"Low: {quote['low_price']}",
+            f"Symbol: {quote.get('symbol', str(symbol).upper())}",
+            f"Mark Price: {quote.get('mark_price')}",
+            f"Bid: {quote.get('bid_price')}",
+            f"Ask: {quote.get('ask_price')}",
+            f"High: {quote.get('high_price')}",
+            f"Low: {quote.get('low_price')}",
         ]
         return {
             "symbol": quote.get("symbol", str(symbol).upper()),
@@ -1199,9 +1266,9 @@ def execute_crypto_order(symbol: str, qty: float, side: str, order_type: str = "
             "side": side_lc,
             "quantity": qty,
             "order_type": order_type_lc,
-            "details": result,
+            "details": _safe_order_details(result),
             "policy": policy,
-            "result_text": f"Crypto Order submitted: {order_id}\nDetails: {result}",
+            "result_text": f"Crypto order submitted: {order_id}",
         }
     except Exception as e:
         return {
@@ -1565,8 +1632,11 @@ def get_market_sentiment() -> dict:
     yield_signal = None
     if isinstance(yields, dict) and "error" not in yields:
         output.append("--- Yield Curve ---")
-        output.append(f"10Y: {yields.get('yield_10y')} | 2Y: {yields.get('yield_2y')}")
-        output.append(f"Spread (10Y-2Y): {yields.get('spread_10y_2y')} ({yields.get('signal', '').upper()})")
+        short_label = "2Y" if yields.get("short_end_instrument") == "2YY=F" else f"short proxy {yields.get('short_end_instrument')}"
+        output.append(f"10Y: {yields.get('yield_10y')} | {short_label}: {yields.get('yield_short_proxy', yields.get('yield_2y'))}")
+        output.append(f"Spread (10Y-short): {yields.get('spread_10y_short_proxy', yields.get('spread_10y_2y'))} ({yields.get('signal', '').upper()})")
+        if yields.get("warning"):
+            output.append(f"Warning: {yields.get('warning')}")
         yield_spread = yields.get("spread_10y_2y")
         yield_signal = yields.get("signal")
     else:
@@ -1611,16 +1681,20 @@ def get_macro_news_headlines(limit: int = 10, only_today: bool = False) -> dict:
         only_today: If True, only return news published today (default: False)
     """
     news_items = get_macro_news(limit, only_today=only_today)
+    meta = get_macro_news_meta()
     if not news_items:
         msg = "No macro news found"
         if only_today:
             msg += " for today"
-        return {"articles": [], "count": 0, "result_text": f"{msg}."}
+        return {"articles": [], "count": 0, "meta": meta, "result_text": f"{msg}."}
 
     if "error" in news_items[0]:
         return {"articles": [], "count": 0, "error": news_items[0]["error"], "result_text": f"Error fetching news: {news_items[0]['error']}"}
 
     output = []
+    if meta.get("partial"):
+        failed = ", ".join(item.get("source", "unknown") for item in meta.get("sources_failed", []))
+        output.append(f"Warning: partial macro news feed; failed sources: {failed}")
     for item in news_items:
         output.append(f"- [{item.get('source', 'Unknown')}] {item['title']} ({item['published']})")
         output.append(f"  Link: {item['link']}")
@@ -1628,6 +1702,7 @@ def get_macro_news_headlines(limit: int = 10, only_today: bool = False) -> dict:
         "articles": news_items,
         "count": len(news_items),
         "only_today": only_today,
+        "meta": meta,
         "result_text": "\n".join(output),
     }
 
@@ -1772,6 +1847,12 @@ if __name__ == "__main__":
     parser.add_argument("--path", default="/messages", help="HTTP path for the endpoint")
 
     args = parser.parse_args()
+    if args.transport != "stdio" and args.host not in {"127.0.0.1", "localhost", "::1"}:
+        if not _is_truthy_env("ROBIN_MCP_ALLOW_REMOTE", False):
+            raise SystemExit(
+                "Refusing to bind MCP server to a non-loopback host without "
+                "ROBIN_MCP_ALLOW_REMOTE=1. Put remote deployments behind authenticated network controls."
+            )
     kwargs = {}
     if args.transport != "stdio":
         kwargs["host"] = args.host

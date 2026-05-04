@@ -310,12 +310,15 @@ def compute_var_cvar(
 
     # Align columns to weights
     aligned_symbols = [s for s in symbols if s in returns.columns]
+    dropped_symbols = [s for s in symbols if s not in aligned_symbols]
     if len(aligned_symbols) != len(symbols):
         # Re-normalize to the subset we actually have data for
         idx = [symbols.index(s) for s in aligned_symbols]
         weights = weights[idx]
         weights = weights / weights.sum() if weights.sum() > 0 else weights
     returns = returns[aligned_symbols].dropna()
+    if not aligned_symbols or returns.empty:
+        return {"available": False, "reason": "insufficient_aligned_returns", "dropped_symbols": dropped_symbols}
 
     portfolio_returns = returns.values @ weights
 
@@ -340,6 +343,11 @@ def compute_var_cvar(
         "portfolio_value_usd": round(total, 2),
         "samples": len(portfolio_returns),
         "method": "historical_simulation",
+        "effective_symbols": aligned_symbols,
+        "dropped_symbols": dropped_symbols,
+        "warnings": [
+            "Some symbols were omitted and remaining weights were re-normalized."
+        ] if dropped_symbols else [],
     }
 
 
@@ -362,7 +370,7 @@ def kelly_sizing(
     p = max(0.0, min(1.0, win_rate))
     q = 1 - p
     full_kelly = (b * p - q) / b if b > 0 else 0
-    suggested = max(0.0, full_kelly * kelly_fraction)
+    suggested = min(0.0999, max(0.0, full_kelly * kelly_fraction))
 
     return {
         "available": True,
@@ -371,7 +379,7 @@ def kelly_sizing(
         "suggested_position_pct": round(suggested * 100, 2),
         "payoff_ratio": round(b, 3),
         "inputs": {"win_rate": p, "avg_win_pct": avg_win_pct, "avg_loss_pct": avg_loss_pct},
-        "note": "Quarter-Kelly (0.25x) recommended; full Kelly too aggressive given edge uncertainty",
+        "note": "Fractional Kelly is capped below 10% by default because edge estimates are noisy.",
     }
 
 
@@ -415,6 +423,7 @@ def mean_variance_weights(
     n = len(symbols)
 
     # Analytical MV (tangency-adjusted) with λ: w = (1/λ) * Σ^-1 * μ, normalized to sum 1
+    fallback_reason = None
     try:
         inv_cov = np.linalg.pinv(cov)
         w_unnorm = (inv_cov @ mu) / max(risk_aversion, 1e-6)
@@ -424,10 +433,12 @@ def mean_variance_weights(
         if s <= 0:
             # Fall back to equal-weight if all-negative
             w = np.ones(n) / n
+            fallback_reason = "all_expected_returns_non_positive_after_projection"
         else:
             w = w_unnorm / s
-    except Exception:
+    except Exception as e:
         w = np.ones(n) / n
+        fallback_reason = f"optimizer_failed:{type(e).__name__}"
 
     expected_return_annual = float(w @ mu)
     portfolio_var = float(w @ cov @ w)
@@ -441,6 +452,8 @@ def mean_variance_weights(
         "expected_annual_vol_pct": round(portfolio_vol * 100, 3),
         "expected_sharpe": round(expected_return_annual / portfolio_vol, 3) if portfolio_vol > 0 else None,
         "method": "mean_variance_long_only",
+        "fallback": fallback_reason is not None,
+        "fallback_reason": fallback_reason,
     }
 
 

@@ -79,8 +79,8 @@ def get_yf_news(symbol: str) -> List[Dict[str, Any]]:
         ticker = yf.Ticker(symbol)
         news = ticker.news
         return news if news else []
-    except Exception:
-        return []
+    except Exception as e:
+        raise RuntimeError(f"Yahoo Finance news unavailable for {symbol}: {e}") from e
 
 def get_yf_options(symbol: str, expiration_date: Optional[str] = None) -> Dict[str, Any]:
     """

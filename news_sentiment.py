@@ -150,6 +150,7 @@ def get_news_sentiment(symbol: str, lookback_hours: int = 72) -> dict:
     scored = []
     total_weighted_polarity = 0.0
     total_weight = 0.0
+    excluded_timestamp_unknown = 0
 
     for art in articles:
         title = art.get("title") or ""
@@ -170,7 +171,8 @@ def get_news_sentiment(symbol: str, lookback_hours: int = 72) -> dict:
             except Exception:
                 art_time = None
         if art_time is None:
-            art_time = now  # fallback; treat as fresh
+            excluded_timestamp_unknown += 1
+            continue
 
         if art_time < cutoff:
             continue
@@ -204,10 +206,16 @@ def get_news_sentiment(symbol: str, lookback_hours: int = 72) -> dict:
         "symbol": sym,
         "sentiment_score": round(sentiment_score, 4),
         "article_count": len(scored),
+        "excluded_timestamp_unknown": excluded_timestamp_unknown,
         "weighted_article_count": round(total_weight, 2),
         "top_articles": scored[:5],
         "lookback_hours": lookback_hours,
         "computed_at_utc": now.isoformat().replace("+00:00", "Z"),
+        "data_quality": {
+            "source": "yfinance_news",
+            "timestamp_unknown_articles_excluded": excluded_timestamp_unknown,
+            "warning": "Articles without parseable publish timestamps are excluded from scoring.",
+        },
     }
 
 

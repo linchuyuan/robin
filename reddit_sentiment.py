@@ -325,7 +325,12 @@ def _collect_symbol_stats(
     )
     cached = _cache_get(_STATS_CACHE, cache_key)
     if cached is not None:
-        return cached
+        stats, data_quality = cached
+        cached_quality = dict(data_quality)
+        cached_quality["cache_hit"] = True
+        cached_quality["cache_ttl_seconds"] = _CACHE_TTL_SECONDS
+        cached_quality["served_at_utc"] = datetime.now(timezone.utc).isoformat()
+        return stats, cached_quality
 
     t0 = time.time()
     now = datetime.now(timezone.utc)
@@ -437,6 +442,8 @@ def _collect_symbol_stats(
         "query": query,
         "time_filter": time_filter,
         "fetched_at_utc": datetime.now(timezone.utc).isoformat(),
+        "cache_hit": False,
+        "cache_ttl_seconds": _CACHE_TTL_SECONDS,
     }
     payload = (stats, data_quality)
     _cache_put(_STATS_CACHE, cache_key, payload)
@@ -475,6 +482,8 @@ def get_reddit_symbol_mentions(
         )
     if not lines:
         lines = ["No symbol mentions found."]
+    if data_quality.get("cache_hit"):
+        lines.insert(0, f"Cache hit: Reddit stats fetched at {data_quality.get('fetched_at_utc')} (ttl={data_quality.get('cache_ttl_seconds')}s).")
 
     return {
         "window": {
@@ -672,6 +681,8 @@ def get_reddit_sentiment_snapshot(
         )
     if not lines:
         lines = ["No sentiment snapshot available."]
+    if data_quality.get("cache_hit"):
+        lines.insert(0, f"Cache hit: Reddit stats fetched at {data_quality.get('fetched_at_utc')} (ttl={data_quality.get('cache_ttl_seconds')}s).")
 
     return {
         "window": {

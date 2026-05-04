@@ -50,13 +50,21 @@ def _memory_dir() -> Path:
 
 
 def _workflow_path(path: str) -> Path:
-    p = Path(path).expanduser()
+    raw = str(path or "").strip()
+    if not raw:
+        raise ValueError("path is required")
+    p = Path(raw).expanduser()
     if p.is_absolute():
-        return p
-    parts = p.parts
-    if parts and parts[0] == "memory":
-        return _memory_dir().joinpath(*parts[1:])
-    return p
+        raise ValueError("absolute paths are not allowed; use memory-relative paths")
+    if any(part == ".." for part in p.parts):
+        raise ValueError("parent directory traversal is not allowed")
+
+    base = _memory_dir().resolve()
+    parts = p.parts[1:] if p.parts and p.parts[0] == "memory" else p.parts
+    resolved = base.joinpath(*parts).resolve()
+    if base != resolved and base not in resolved.parents:
+        raise ValueError("path must resolve under the configured memory directory")
+    return resolved
 
 
 def register_advanced_tools(mcp) -> None:
@@ -97,6 +105,8 @@ def register_advanced_tools(mcp) -> None:
             f"{symbol}: news sentiment {out.get('sentiment_score'):+.2f} from "
             f"{out.get('article_count')} articles (weighted {out.get('weighted_article_count')})"
         )
+        if out.get("excluded_timestamp_unknown"):
+            text += f" | excluded undated articles: {out.get('excluded_timestamp_unknown')}"
         return {**out, "result_text": text}
 
     @mcp.tool()
@@ -127,7 +137,13 @@ def register_advanced_tools(mcp) -> None:
         try:
             chain = get_yf_options(symbol, expiration_date)
         except Exception as e:
-            return {"available": False, "error": str(e)}
+            return {
+                "available": False,
+                "symbol": str(symbol).upper(),
+                "expiration_date": expiration_date,
+                "error": str(e),
+                "result_text": f"Error fetching options chain for {str(symbol).upper()}: {e}",
+            }
         # Normalize Yahoo chain to options_flow.detect_unusual_activity's expected keys.
         norm_calls = []
         norm_puts = []
@@ -211,7 +227,11 @@ def register_advanced_tools(mcp) -> None:
         try:
             positions = list_positions() or []
         except Exception as e:
-            return {"available": False, "error": str(e)}
+            return {
+                "available": False,
+                "error": str(e),
+                "result_text": f"Error loading portfolio positions: {e}",
+            }
         if not positions:
             return {"available": False, "reason": "no_positions", "result_text": "No positions to assess."}
         normalized = [
@@ -257,7 +277,11 @@ def register_advanced_tools(mcp) -> None:
         if method == "kelly":
             return kelly_sizing(win_rate, avg_win_pct, avg_loss_pct)
         if not sym_list:
-            return {"available": False, "reason": "symbols_required_for_that_method"}
+            return {
+                "available": False,
+                "reason": "symbols_required_for_that_method",
+                "result_text": "symbols is required for this optimization method.",
+            }
         if method == "risk_parity":
             return risk_parity_weights(sym_list)
         return mean_variance_weights(sym_list, risk_aversion)
@@ -273,7 +297,7 @@ def register_advanced_tools(mcp) -> None:
         from portfolio import list_positions
         positions = list_positions() or []
         if not positions:
-            return {"available": False, "reason": "no_positions"}
+            return {"available": False, "reason": "no_positions", "result_text": "No positions to stress test."}
         normalized = [
             {"symbol": p["symbol"], "market_value_usd": float(p.get("equity") or 0)}
             for p in positions
@@ -354,12 +378,23 @@ def register_advanced_tools(mcp) -> None:
         champion = _read_json(champion_path)
         candidate = _read_json(candidate_path)
         if not champion or not candidate:
-            return {"available": False, "reason": "params_files_missing_or_empty"}
+            return {
+                "available": False,
+                "reason": "params_files_missing_or_empty",
+                "result_text": "Champion or candidate parameter files are missing or empty.",
+            }
 
         # Collect traces
-        traces_dir = _workflow_path(trace_dir)
+        try:
+            traces_dir = _workflow_path(trace_dir)
+        except ValueError as e:
+            return {"available": False, "reason": "invalid_trace_dir", "error": str(e), "result_text": str(e)}
         if not traces_dir.exists():
-            return {"available": False, "reason": f"no_trace_dir: {trace_dir}"}
+            return {
+                "available": False,
+                "reason": f"no_trace_dir: {trace_dir}",
+                "result_text": f"No trace directory found under memory: {trace_dir}",
+            }
 
         cutoff = datetime.now(timezone.utc).date().toordinal() - max(1, int(days))
         relevant = []
@@ -378,7 +413,11 @@ def register_advanced_tools(mcp) -> None:
                 continue
 
         if not relevant:
-            return {"available": False, "reason": "no_trace_files_in_window"}
+            return {
+                "available": False,
+                "reason": "no_trace_files_in_window",
+                "result_text": "No decision trace files found in the requested window.",
+            }
 
         # Heuristic replay: compare score_threshold and sizing between the two
         champ_thresh = champion.get("score_threshold", 70)

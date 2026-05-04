@@ -126,6 +126,8 @@ def list_positions() -> List[Dict[str, Any]]:
             "type": data.get("type"),
             "pe_ratio": pe_ratio,
             "market_cap": market_cap,
+            "sector": fund_data.get("sector"),
+            "industry": fund_data.get("industry"),
             "high_52_weeks": fund_data.get('high_52_weeks'),
             "low_52_weeks": fund_data.get('low_52_weeks'),
             "beta": beta,

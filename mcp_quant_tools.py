@@ -140,8 +140,10 @@ def register_quant_tools(mcp) -> None:
             }
         if not result.get("result_text"):
             peers = result.get("peers") or []
+            uses_fallback = any(p.get("source") != "yahoo_search" for p in peers)
+            prefix = "SECTOR_FALLBACK_NOT_PEER_VALIDATED: " if uses_fallback else ""
             result["result_text"] = (
-                f"{sym} peers: " + ", ".join(p.get("symbol", "") for p in peers)
+                prefix + f"{sym} peers: " + ", ".join(p.get("symbol", "") for p in peers)
                 if peers
                 else f"No peers found for {sym}."
             )
@@ -182,7 +184,10 @@ def register_quant_tools(mcp) -> None:
                 if isinstance(pair_symbols, list) and len(pair_symbols) == 2:
                     lines.append(f"  {pair_symbols[0]} <-> {pair_symbols[1]}: {value}")
         else:
-            lines.append("No high correlation pairs found (>0.7). Portfolio looks diversified.")
+            if dropped_symbols and len(dropped_symbols) >= max(1, len(sym_list) // 2):
+                lines.append("No high correlation pairs found, but too many symbols were dropped to infer diversification.")
+            else:
+                lines.append("No high correlation pairs found (>0.7).")
         if dropped_symbols:
             lines.append(f"Dropped symbols (invalid/no data): {', '.join(dropped_symbols)}")
 
@@ -207,16 +212,21 @@ def register_quant_tools(mcp) -> None:
                 "error": "Insufficient data to calculate IV rank",
                 "result_text": f"Error: insufficient data to calculate IV rank for {sym}.",
             }
-        strategy_hint = "sell_premium" if result["iv_rank"] > 50 else "buy_options"
+        warnings = list(result.get("warnings") or [])
+        strategy_hint = None
+        if result.get("volatility_metric") == "implied_volatility":
+            strategy_hint = "sell_premium" if result["iv_rank"] > 50 else "buy_options"
         return {
             "symbol": sym,
             **result,
             "strategy_hint": strategy_hint,
             "result_text": (
-                f"{sym} IV Analysis | Current IV: {result['iv_current']:.2%} | "
+                f"{sym} volatility analysis ({result.get('volatility_metric')}) | "
+                f"Current: {result['iv_current']:.2%} | "
                 f"52W High: {result['iv_52w_high']:.2%} | 52W Low: {result['iv_52w_low']:.2%} | "
                 f"IV Rank: {result['iv_rank']:.1f} | IV Percentile: {result['iv_percentile']:.1f} | "
-                f"Hint: {strategy_hint}"
+                f"Hint: {strategy_hint or 'none - proxy data only'}"
+                + (f" | Warning: {'; '.join(warnings)}" if warnings else "")
             ),
         }
 
@@ -358,6 +368,7 @@ def register_quant_tools(mcp) -> None:
                 quote = {
                     "symbol": sym,
                     "price": info.get("regularMarketPrice") or info.get("currentPrice"),
+                    "regular_market_time": info.get("regularMarketTime"),
                     "previous_close": info.get("previousClose"),
                     "change_pct": None,
                     "volume": info.get("volume"),
@@ -368,6 +379,11 @@ def register_quant_tools(mcp) -> None:
                     "52w_low": info.get("fiftyTwoWeekLow"),
                     "beta": info.get("beta"),
                     "sector": info.get("sector"),
+                    "data_quality": {
+                        "source": "yfinance_ticker_info",
+                        "quote_time": info.get("regularMarketTime"),
+                        "warning": "Yahoo quote timing and delay status are provider-dependent.",
+                    },
                 }
                 price = quote["price"]
                 prev = quote["previous_close"]

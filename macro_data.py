@@ -68,6 +68,25 @@ def _download_close(symbol: str, period: str = "3mo") -> pd.Series:
     return pd.Series(dtype=float)
 
 
+def _series_meta(symbol: str, period: str, series: pd.Series) -> dict:
+    cached = _DOWNLOAD_CACHE.get((symbol, period))
+    fetched_at = cached[0] if cached else None
+    last_date = None
+    if series is not None and not series.empty:
+        try:
+            last_date = pd.Timestamp(series.index[-1]).isoformat()
+        except Exception:
+            last_date = None
+    return {
+        "symbol": symbol,
+        "source": "yfinance",
+        "period": period,
+        "last_bar": last_date,
+        "cache_age_seconds": round(time.time() - fetched_at, 2) if fetched_at else None,
+        "cache_ttl_seconds": _CACHE_TTL_SEC,
+    }
+
+
 def get_yield_curve_proxy() -> dict:
     """
     Approximate the 10Y-2Y spread using TLT (20+Y Treasury) vs SHY (1-3Y) price behavior.
@@ -76,7 +95,7 @@ def get_yield_curve_proxy() -> dict:
     tlt = _download_close("TLT", "3mo")
     shy = _download_close("SHY", "3mo")
     if tlt.empty or shy.empty:
-        return {"error": "No data", "available": False}
+        return {"error": "No data", "available": False, "reason": "missing_tlt_or_shy"}
 
     tlt_ret_20d = _safe_pct_change(tlt, 20)
     shy_ret_20d = _safe_pct_change(shy, 20)
@@ -96,6 +115,10 @@ def get_yield_curve_proxy() -> dict:
         "shy_20d_return": shy_ret_20d,
         "relative_return_20d": (tlt_ret_20d - shy_ret_20d) if tlt_ret_20d is not None and shy_ret_20d is not None else None,
         "signal": signal,
+        "series_meta": {
+            "TLT": _series_meta("TLT", "3mo", tlt),
+            "SHY": _series_meta("SHY", "3mo", shy),
+        },
         "note": "proxy only; for exact 10Y-2Y use FRED if available",
     }
 
@@ -108,7 +131,7 @@ def get_credit_spread_proxy() -> dict:
     hyg = _download_close("HYG", "3mo")
     lqd = _download_close("LQD", "3mo")
     if hyg.empty or lqd.empty:
-        return {"error": "No data", "available": False}
+        return {"error": "No data", "available": False, "reason": "missing_hyg_or_lqd"}
 
     hyg_ret_20d = _safe_pct_change(hyg, 20)
     lqd_ret_20d = _safe_pct_change(lqd, 20)
@@ -127,6 +150,10 @@ def get_credit_spread_proxy() -> dict:
         "lqd_20d_return": lqd_ret_20d,
         "hyg_lqd_spread_return_20d": rel,
         "state": state,
+        "series_meta": {
+            "HYG": _series_meta("HYG", "3mo", hyg),
+            "LQD": _series_meta("LQD", "3mo", lqd),
+        },
     }
 
 
@@ -143,12 +170,20 @@ def get_vix_term_structure() -> dict:
         vix_level = float(vix.iloc[-1])
         vxv_level = float(vxv.iloc[-1]) if not vxv.empty else None
 
+        if vxv_level is None:
+            return {
+                "available": False,
+                "reason": "missing_vix3m",
+                "vix_spot": round(vix_level, 2),
+                "vix_3m": None,
+                "state": "insufficient_data",
+                "series_meta": {"^VIX": _series_meta("^VIX", "1mo", vix)},
+            }
         state = "flat"
-        if vxv_level:
-            if vix_level > vxv_level + 2:
-                state = "backwardation"
-            elif vix_level < vxv_level - 2:
-                state = "contango"
+        if vix_level > vxv_level + 2:
+            state = "backwardation"
+        elif vix_level < vxv_level - 2:
+            state = "contango"
 
         return {
             "available": True,
@@ -156,6 +191,10 @@ def get_vix_term_structure() -> dict:
             "vix_3m": round(vxv_level, 2) if vxv_level else None,
             "spread_points": round(vix_level - vxv_level, 2) if vxv_level else None,
             "state": state,
+            "series_meta": {
+                "^VIX": _series_meta("^VIX", "1mo", vix),
+                "^VIX3M": _series_meta("^VIX3M", "1mo", vxv),
+            },
         }
     except Exception as e:
         return {"error": str(e), "available": False}
@@ -168,17 +207,21 @@ def get_flight_to_quality() -> dict:
     spy = _download_close("SPY", "1mo")
     gld = _download_close("GLD", "1mo")
     if spy.empty or gld.empty:
-        return {"available": False}
+        return {"available": False, "reason": "missing_spy_or_gld"}
     spy_5d = _safe_pct_change(spy, 5)
     gld_5d = _safe_pct_change(gld, 5)
     if spy_5d is None or gld_5d is None:
-        return {"available": False}
+        return {"available": False, "reason": "insufficient_history"}
     return {
         "available": True,
         "spy_5d_return": spy_5d,
         "gld_5d_return": gld_5d,
         "gold_outperformance_5d": gld_5d - spy_5d,
         "flight_to_quality_active": (gld_5d - spy_5d) > 0.02 and spy_5d < -0.02,
+        "series_meta": {
+            "SPY": _series_meta("SPY", "1mo", spy),
+            "GLD": _series_meta("GLD", "1mo", gld),
+        },
     }
 
 
@@ -236,9 +279,11 @@ def get_sector_breadth() -> dict:
     pos_5d = 0
     pos_20d = 0
     details = []
+    missing_symbols = []
     for s in sectors:
         series = _download_close(s, "3mo")
         if series.empty:
+            missing_symbols.append(s)
             continue
         r5 = _safe_pct_change(series, 5)
         r20 = _safe_pct_change(series, 20)
@@ -246,14 +291,18 @@ def get_sector_breadth() -> dict:
             pos_5d += 1
         if r20 is not None and r20 > 0:
             pos_20d += 1
-        details.append({"symbol": s, "return_5d": r5, "return_20d": r20})
+        details.append({"symbol": s, "return_5d": r5, "return_20d": r20, "series_meta": _series_meta(s, "3mo", series)})
 
-    n = len(sectors)
+    n = len(details)
     pct_5d = pos_5d / n if n else 0.0
-    state = "healthy" if pct_5d > 0.6 else "weak" if pct_5d < 0.3 else "neutral"
+    state = "insufficient_data" if not n else "healthy" if pct_5d > 0.6 else "weak" if pct_5d < 0.3 else "neutral"
     return {
+        "available": bool(n),
         "pct_positive_5d": round(pct_5d, 3),
-        "pct_positive_20d": round(pos_20d / n, 3),
+        "pct_positive_20d": round(pos_20d / n, 3) if n else 0.0,
         "state": state,
         "sectors": details,
+        "symbols_expected_count": len(sectors),
+        "symbols_ok_count": n,
+        "symbols_missing": missing_symbols,
     }

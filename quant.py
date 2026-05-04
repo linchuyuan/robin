@@ -149,10 +149,11 @@ def calculate_bollinger_bands(close: pd.Series, period: int = 20, std_dev: float
 
 def calculate_iv_rank(symbol: str, current_iv: float | None = None) -> dict | None:
     """
-    Calculate IV Rank and IV Percentile for a symbol.
-    IV Rank = (current_iv - 52w_low_iv) / (52w_high_iv - 52w_low_iv) * 100
-    IV Percentile = % of days in past year where IV was below current IV
-    Uses realized volatility as proxy when current IV is not provided.
+    Calculate volatility rank and percentile for a symbol.
+
+    If current_iv is provided, the latest point is implied volatility. Otherwise
+    this falls back to 20-day realized volatility and labels the result as a
+    proxy so callers do not mistake it for true IV rank.
     """
     try:
         ticker = yf.Ticker(symbol)
@@ -166,7 +167,8 @@ def calculate_iv_rank(symbol: str, current_iv: float | None = None) -> dict | No
         if len(rolling_iv) < 20:
             return None
 
-        if current_iv is not None and current_iv > 0:
+        uses_implied_iv = current_iv is not None and current_iv > 0
+        if uses_implied_iv:
             iv_now = current_iv
         else:
             iv_now = float(rolling_iv.iloc[-1])
@@ -184,6 +186,11 @@ def calculate_iv_rank(symbol: str, current_iv: float | None = None) -> dict | No
             "iv_52w_low": round(iv_low, 4),
             "iv_rank": round(iv_rank, 2),
             "iv_percentile": round(iv_percentile, 2),
+            "volatility_metric": "implied_volatility" if uses_implied_iv else "realized_volatility_proxy",
+            "source": "provided_current_iv" if uses_implied_iv else "yfinance_20d_realized_volatility",
+            "warnings": [] if uses_implied_iv else [
+                "current_iv was not provided; rank is based on realized volatility, not option-implied volatility."
+            ],
         }
     except Exception:
         return None
@@ -206,7 +213,16 @@ def detect_unusual_options_activity(calls: list[dict], puts: list[dict], current
             vol = int(opt.get("volume") or 0)
             oi = int(opt.get("open_interest") or 0)
             strike = float(opt.get("strike") or 0)
-            mid = float(opt.get("price") or opt.get("mid") or 0)
+            mid_raw = opt.get("price") or opt.get("mid")
+            if mid_raw in ("", None):
+                bid = float(opt.get("bid") or 0)
+                ask = float(opt.get("ask") or 0)
+                mid_raw = (bid + ask) / 2 if bid > 0 and ask > 0 else None
+            if mid_raw in ("", None):
+                continue
+            mid = float(mid_raw)
+            if mid <= 0:
+                continue
             iv = float(opt.get("implied_volatility") or 0)
 
             premium_traded = vol * mid * 100
@@ -429,6 +445,7 @@ def get_technical_indicators(symbol: str) -> dict:
         result = {
             "symbol": symbol.upper(),
             "price": round(float(current_price), 2),
+            "as_of_bar": hist.index[-1].isoformat() if len(hist.index) else None,
             "sma_20": round(float(sma_20), 2) if not pd.isna(sma_20) else None,
             "sma_50": round(float(sma_50), 2) if not pd.isna(sma_50) else None,
             "sma_200": round(float(sma_200), 2) if not pd.isna(sma_200) else None,
@@ -476,6 +493,11 @@ def get_technical_indicators(symbol: str) -> dict:
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "timezone": "UTC",
+            "data_quality": {
+                "source": "yfinance_daily_history",
+                "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "as_of_bar": hist.index[-1].isoformat() if len(hist.index) else None,
+            },
         }
 
         if iv_data:
@@ -889,8 +911,11 @@ def get_peers(symbol: str, limit: int = 6) -> dict:
                 if len(peers) >= limit:
                     break
 
+        uses_fallback = any(p.get("source") != "yahoo_search" for p in peers)
+        prefix = "SECTOR_FALLBACK_NOT_PEER_VALIDATED: " if uses_fallback else ""
         result_text = (
-            f"{symbol_up} peers ({sector or 'Unknown sector'} / {industry or 'Unknown industry'}): "
+            prefix
+            + f"{symbol_up} peers ({sector or 'Unknown sector'} / {industry or 'Unknown industry'}): "
             + ", ".join(p["symbol"] for p in peers)
             if peers
             else f"No peers found for {symbol_up}."

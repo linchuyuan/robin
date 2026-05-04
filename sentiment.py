@@ -79,13 +79,16 @@ def get_yield_curve() -> Dict[str, Any]:
             two_year = yf.Ticker("2YY=F")
             two_year_info = two_year.info or {}
             yield_2y = two_year_info.get("regularMarketPrice") or two_year_info.get("previousClose")
+            short_end_instrument = "2YY=F"
         except Exception:
             yield_2y = None
+            short_end_instrument = None
 
         if yield_2y is None:
             twoy = yf.Ticker("^IRX")  # 13-week T-bill as fallback
             twoy_info = twoy.info or {}
             yield_2y = twoy_info.get("regularMarketPrice") or twoy_info.get("previousClose")
+            short_end_instrument = "^IRX"
 
         tnx_info = tnx.info or {}
         yield_10y = tnx_info.get("regularMarketPrice") or tnx_info.get("previousClose")
@@ -105,9 +108,13 @@ def get_yield_curve() -> Dict[str, Any]:
 
         return {
             "yield_10y": yield_10y,
-            "yield_2y": yield_2y,
+            "yield_2y": yield_2y if short_end_instrument == "2YY=F" else None,
+            "yield_short_proxy": yield_2y,
+            "short_end_instrument": short_end_instrument,
             "spread_10y_2y": spread,
+            "spread_10y_short_proxy": spread,
             "signal": signal,
+            "warning": "short end uses ^IRX 13-week bill proxy, not true 2Y yield" if short_end_instrument == "^IRX" else None,
         }
     except Exception as e:
         return {"error": str(e)}

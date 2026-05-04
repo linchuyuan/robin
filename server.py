@@ -4,9 +4,21 @@ import json
 import os
 import tempfile
 import threading
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
+
+try:
+    from authlib.deprecate import AuthlibDeprecationWarning
+except Exception:
+    AuthlibDeprecationWarning = Warning
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"authlib\.jose module is deprecated, please use joserfc instead\.",
+    category=AuthlibDeprecationWarning,
+)
 
 from fastmcp import FastMCP
 from auth import get_session

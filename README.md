@@ -24,10 +24,10 @@ This is not a fully automated trading bot by itself. The implementation is desig
 | Kalshi data | `kalshi.py`, `mcp_kalshi_tools.py` | Browses public Kalshi prediction markets for global, economic, macro, and stock-ticker context. This is read-only market-data access. |
 | Quant research | `quant.py`, `backtest_engine.py` | Calculates indicators, daily relative volume context, intraday volume velocity, IV rank, unusual options activity, risk/correlation metrics, peer candidates, and strategy backtests. |
 | Advanced risk & attribution | `quant_advanced.py`, `stress_tester.py` | Fama-French 5+MOM factor attribution (Ken French data with ETF-proxy fallback), historical-simulation VaR/CVaR, mean-variance/risk-parity/Kelly sizing, per-position risk attribution, and 7-scenario historical shock replay with 1.5× tail multiplier. |
-| Alt-data & flow | `insider_flow.py`, `options_flow.py`, `news_sentiment.py`, `earnings_consensus.py` | Openinsider Form-4 insider transactions (rate-limited, UA-rotated), options flow / unusual activity with smile fit and RR25, VADER-based news sentiment with publisher-tier weighting, and earnings-surprise probability from yfinance estimate/trend/history tables. |
+| Alt-data & flow | `insider_flow.py`, `options_flow.py`, `news_sentiment.py`, `earnings_consensus.py`, `fundamental_revision.py` | Openinsider Form-4 insider transactions (rate-limited, UA-rotated), options flow / unusual activity with smile fit and RR25, VADER-based news sentiment with publisher-tier weighting, earnings-surprise probability, and estimate-revision/earnings-quality scoring from yfinance estimate/trend/financial tables. |
 | Macro & regime | `macro_data.py` | Yield-curve / credit-spread / VIX-term-structure / flight-to-quality / sector-breadth dashboards feeding the macro-regime-classifier skill. |
-| Execution modeling | `execution_models.py`, `drift_monitor.py` | Empirical slippage curve (size/volatility/time-of-day-aware), VWAP volume-profile slicing, and live-fill drift monitor with file-locked atomic writes to compare realized slippage against the model. |
-| Advanced MCP tools | `mcp_advanced_tools.py` | Registers 14 additional MCP tools: `get_macro_regime_dashboard`, `get_sector_breadth_tool`, `get_news_sentiment_tool`, `get_insider_flow_tool`, `get_unusual_options_activity_tool`, `get_earnings_surprise_tool`, `get_factor_attribution_tool`, `get_portfolio_risk_summary_tool`, `get_portfolio_optimization_tool`, `get_stress_test_tool`, `get_slippage_estimate_tool`, `record_live_fill_tool`, `get_drift_report_tool`, `backtest_params_vs_trace_tool`. |
+| Execution modeling & learning | `execution_models.py`, `drift_monitor.py`, `confidence_calibration.py` | Empirical slippage curve (size/volatility/time-of-day-aware), VWAP volume-profile slicing, live-fill drift monitor, and decision-trace confidence calibration against benchmark-relative outcomes. |
+| Advanced MCP tools | `mcp_advanced_tools.py` | Registers 16 additional MCP tools: `get_macro_regime_dashboard`, `get_sector_breadth_tool`, `get_news_sentiment_tool`, `get_insider_flow_tool`, `get_unusual_options_activity_tool`, `get_earnings_surprise_tool`, `get_fundamental_revision_tool`, `get_factor_attribution_tool`, `get_portfolio_risk_summary_tool`, `get_portfolio_optimization_tool`, `get_stress_test_tool`, `get_slippage_estimate_tool`, `record_live_fill_tool`, `get_drift_report_tool`, `get_confidence_calibration_tool`, `backtest_params_vs_trace_tool`. |
 
 ## Installation
 
@@ -299,9 +299,11 @@ Quant tools:
 - `get_iv_rank_tool`
 - `get_unusual_options_activity_tool` (advanced flow/smile/RR25 signal)
 - `get_unusual_options_activity_basic_tool` (legacy volume/OI and premium-bias summary)
+- `get_fundamental_revision_tool` (estimate-revision and earnings-quality signal)
 - `get_portfolio_risk_summary_tool` (advanced VaR/CVaR and risk attribution)
 - `get_portfolio_concentration_summary_tool` (legacy position/sector concentration summary)
 - `get_multi_stock_quotes`
+- `get_confidence_calibration_tool` (confidence-vs-outcome calibration from decision traces)
 
 ## Pre-Trade Policy
 

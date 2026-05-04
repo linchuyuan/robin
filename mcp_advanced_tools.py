@@ -7,6 +7,7 @@ Exposes:
   - get_insider_flow_tool
   - get_unusual_options_activity_tool
   - get_earnings_surprise_tool
+  - get_fundamental_revision_tool
   - get_factor_attribution_tool
   - get_portfolio_risk_summary_tool (VaR / CVaR / risk attribution)
   - get_portfolio_optimization_tool (mean-variance + risk parity + Kelly)
@@ -14,6 +15,7 @@ Exposes:
   - record_live_fill_tool
   - get_drift_report_tool
   - get_slippage_estimate_tool
+  - get_confidence_calibration_tool
   - backtest_params_vs_trace_tool (daily-review auto-backtest)
 """
 from __future__ import annotations
@@ -29,6 +31,8 @@ from news_sentiment import get_news_sentiment, combine_sentiment_sources
 from insider_flow import get_insider_flow
 from options_flow import detect_unusual_activity
 from earnings_consensus import get_earnings_signal
+from fundamental_revision import get_fundamental_revision_signal
+from confidence_calibration import compute_confidence_calibration
 from quant_advanced import (
     compute_factor_attribution,
     compute_var_cvar,
@@ -201,6 +205,22 @@ def register_advanced_tools(mcp) -> None:
         return {**result, "result_text": text}
 
     @mcp.tool()
+    def get_fundamental_revision_tool(symbol: str) -> dict:
+        """
+        Estimate-revision and earnings-quality signal for a symbol.
+        Combines EPS revisions, analyst revision breadth, dispersion,
+        cash conversion, accruals, FCF margin, and buyback/dilution pressure
+        into a -100..+100 score plus bullish/neutral/bearish label.
+        """
+        result = get_fundamental_revision_signal(symbol)
+        if not result.get("available"):
+            return {
+                **result,
+                "result_text": f"Fundamental revision signal unavailable for {str(symbol).upper()}: {result.get('error') or 'insufficient data'}",
+            }
+        return result
+
+    @mcp.tool()
     def get_factor_attribution_tool(symbol: str, period: str = "1y") -> dict:
         """
         Fama-French-style factor attribution (MKT / SMB / HML / QMJ / MOM)
@@ -359,6 +379,62 @@ def register_advanced_tools(mcp) -> None:
     def get_drift_report_tool() -> dict:
         """Return live-vs-backtest slippage drift summary for calibration tuning."""
         return get_drift_report()
+
+    @mcp.tool()
+    def get_confidence_calibration_tool(
+        trace_dir: str = "memory/decision-trace",
+        days: int = 90,
+        horizon: str = "d5_return",
+    ) -> dict:
+        """
+        Calibrate stated decision confidence against realized outcomes in
+        decision traces. Buckets decisions into high/moderate/low confidence
+        and reports win rate vs benchmark plus average excess return.
+        """
+        try:
+            traces_dir = _workflow_path(trace_dir)
+        except ValueError as e:
+            return {
+                "available": False,
+                "reason": "invalid_trace_dir",
+                "error": str(e),
+                "result_text": str(e),
+            }
+        if not traces_dir.exists():
+            return {
+                "available": False,
+                "reason": f"no_trace_dir: {trace_dir}",
+                "result_text": f"No trace directory found under memory: {trace_dir}",
+            }
+
+        cutoff = datetime.now(timezone.utc).date().toordinal() - max(1, int(days))
+        traces = []
+        for f in sorted(traces_dir.glob("*.json")):
+            try:
+                parts = [int(x) for x in f.stem.split("-")]
+                date_ord = datetime(*parts).date().toordinal()
+            except Exception:
+                continue
+            if date_ord < cutoff:
+                continue
+            try:
+                traces.append(json.loads(f.read_text(encoding="utf-8")))
+            except Exception:
+                continue
+
+        result = compute_confidence_calibration(traces, horizon=horizon)
+        result["trace_files_loaded"] = len(traces)
+        result["trace_dir"] = str(traces_dir)
+        if not result.get("available"):
+            result["result_text"] = "No labeled confidence/outcome samples found in decision traces."
+        else:
+            high = result.get("buckets", {}).get("high", {})
+            result["result_text"] = (
+                f"Confidence calibration ({horizon}): n={result.get('sample_size')}, "
+                f"high_win_rate={high.get('win_rate_vs_benchmark')}, "
+                f"recommendation={'; '.join(result.get('recommendations') or [])}"
+            )
+        return result
 
     @mcp.tool()
     def backtest_params_vs_trace_tool(

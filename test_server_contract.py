@@ -73,6 +73,22 @@ class TestServerContracts(unittest.TestCase):
         self.assertIn("policy", result)
         mock_place_order.assert_called_once()
 
+    @patch.dict("os.environ", {"ROBIN_MCP_ALLOW_LIVE_TRADING": "0"}, clear=False)
+    @patch("server.evaluate_pretrade_policy", return_value={"allowed": True, "reason": "ok", "checks": []})
+    @patch("server.get_session", return_value=None)
+    @patch("server.place_order")
+    def test_legacy_allow_live_env_can_force_paper_mode(self, mock_place_order, _mock_session, _mock_policy):
+        mock_place_order.return_value = {"id": "abc-123", "state": "queued"}
+        with tempfile.TemporaryDirectory() as tmp:
+            paper_file = f"{tmp}/paper-orders.json"
+            with patch.dict("os.environ", {"ROBIN_PAPER_ORDER_FILE": paper_file}, clear=False):
+                result = server.execute_order.fn("AAPL", 1, "buy")
+        self.assertTrue(result.get("success"))
+        self.assertTrue(result.get("paper"))
+        self.assertFalse(result.get("live_trading_enabled"))
+        self.assertTrue(str(result.get("order_id", "")).startswith("paper-"))
+        mock_place_order.assert_not_called()
+
     @patch.dict("os.environ", {"ROBIN_MCP_EXECUTION_MODE": "live"}, clear=False)
     @patch("server.evaluate_pretrade_policy", return_value={"allowed": True, "reason": "ok", "checks": []})
     @patch("server.get_session", return_value=None)

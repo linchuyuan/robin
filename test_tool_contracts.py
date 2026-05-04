@@ -36,6 +36,22 @@ class TestToolContracts(unittest.TestCase):
         missing = sorted(name for name in referenced if name not in defined)
         self.assertEqual([], missing)
 
+    def test_robinhood_schema_lists_all_mcp_tools(self):
+        schema_path = CLAWD_SKILLS / "robinhood" / "SCHEMA.md"
+        if not schema_path.exists():
+            self.skipTest("Robinhood skill schema not present next to robin repo")
+
+        registrations = set()
+        pattern = re.compile(r"@mcp\.tool\(\)\s*\n\s*def\s+([a-zA-Z0-9_]+)\s*\(")
+        for path in MCP_FILES:
+            registrations.update(pattern.findall(path.read_text(errors="ignore")))
+
+        schema_text = schema_path.read_text(errors="ignore")
+        schema_tools = set(re.findall(r"^### `([a-zA-Z0-9_]+)\s*\(", schema_text, re.MULTILINE))
+
+        missing = sorted(registrations - schema_tools)
+        self.assertEqual([], missing)
+
 
 if __name__ == "__main__":
     unittest.main()

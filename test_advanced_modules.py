@@ -207,6 +207,81 @@ class TestEarningsConsensus(unittest.TestCase):
         self.assertGreaterEqual(r["surprise_probability"], 0.10)
 
 
+class TestFundamentalRevisionSignal(unittest.TestCase):
+    def test_strong_revision_and_quality_scores_bullish(self):
+        from fundamental_revision import score_fundamental_revision_signal
+
+        result = score_fundamental_revision_signal(
+            {
+                "eps_revision_7d_pct": 0.02,
+                "eps_revision_30d_pct": 0.06,
+                "eps_revision_90d_pct": 0.08,
+                "revision_breadth_30d": 0.75,
+                "eps_dispersion_pct": 0.12,
+                "analyst_count": 8,
+            },
+            {
+                "cfo_to_net_income": 1.3,
+                "accruals_to_assets": -0.02,
+                "free_cash_flow_margin": 0.18,
+                "buyback_to_net_income": 0.10,
+            },
+        )
+        self.assertEqual(result["signal"], "bullish")
+        self.assertEqual(result["confidence"], "high")
+        self.assertFalse(result["negative_revision_veto"])
+        self.assertGreater(result["fundamental_revision_score"], 40)
+
+    def test_negative_revisions_set_veto(self):
+        from fundamental_revision import score_fundamental_revision_signal
+
+        result = score_fundamental_revision_signal(
+            {
+                "eps_revision_7d_pct": -0.02,
+                "eps_revision_30d_pct": -0.06,
+                "revision_breadth_30d": -1.0,
+                "eps_dispersion_pct": 0.45,
+                "analyst_count": 5,
+            },
+            {"cfo_to_net_income": 0.4, "accruals_to_assets": 0.12},
+        )
+        self.assertEqual(result["signal"], "bearish")
+        self.assertTrue(result["negative_revision_veto"])
+        self.assertLess(result["fundamental_revision_score"], -35)
+
+
+class TestConfidenceCalibration(unittest.TestCase):
+    def test_calibration_buckets_outcomes_vs_benchmark(self):
+        from confidence_calibration import compute_confidence_calibration
+
+        traces = [
+            {
+                "decisions": [
+                    {
+                        "action": "buy",
+                        "predicted_confidence": 0.75,
+                        "outcomes": {"d5_return": 0.04, "d5_spy_return": 0.01},
+                    },
+                    {
+                        "action": "buy",
+                        "confidence": "moderate",
+                        "outcomes": {"d5_return": -0.02, "d5_spy_return": 0.00},
+                    },
+                    {
+                        "action": "hold",
+                        "confidence": "high",
+                        "outcomes": {"d5_return": 0.02, "d5_spy_return": 0.01},
+                    },
+                ]
+            }
+        ]
+        result = compute_confidence_calibration(traces)
+        self.assertTrue(result["available"])
+        self.assertEqual(result["sample_size"], 2)
+        self.assertEqual(result["buckets"]["high"]["win_rate_vs_benchmark"], 1.0)
+        self.assertEqual(result["buckets"]["moderate"]["win_rate_vs_benchmark"], 0.0)
+
+
 class TestStressTester(unittest.TestCase):
     def test_replay_unknown_shock(self):
         from stress_tester import replay_shock
